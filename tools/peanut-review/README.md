@@ -552,6 +552,53 @@ There is no interactive agent help channel: blocked reviewers record a
 rerun after the environment is fixed. Comment-thread replies remain available
 through `add-comment --reply-to`.
 
+## Cleanup from shared session metadata
+
+`peanut-review --session <session-dir> cleanup-status --root <review-root>`
+provides read-only cleanup evidence from shared files. It works when the dashboard
+and reviewers run in another Docker container, without a network connection,
+server restart, or cross-container PID lookup. Repeat `--root` for additional
+review roots. Optional `--worktree <absolute-path>` selects another registered
+worktree in the same repository, even one without a session.
+
+For live inspections on Linux, enforce read-only access with Bubblewrap:
+
+```bash
+bwrap --unshare-all --ro-bind / / --tmpfs /proc --die-with-parent \
+  --setenv PYTHONDONTWRITEBYTECODE 1 -- \
+  tools/peanut-review/bin/peanut-review --session "$SESSION" \
+  cleanup-status --root "$REVIEW_ROOT"
+```
+
+This mounts existing files read-only, isolates networking and PIDs, and hides
+host process handles. Capture stdout outside the sandbox to save a report.
+Unlike `cleanup-status`, ordinary `status` and session-page/API reads can refresh
+and save agent statuses; they are not substitutes for a read-only inspection.
+Host-loopback Docker port publication or a laptop VS Code/SSH forward does not
+make the dashboard reachable from another container's localhost. The metadata
+check needs neither that connection nor a server restart.
+
+The JSON response identifies its worktree, related sessions, each agent's evidence,
+active legacy queue jobs, recent activity, errors and `state: idle|busy|unknown`.
+The command compares supervisor start/end/exit/heartbeat records with the latest
+launch records, where present. A newer launch invalidates an older completion;
+a stale heartbeat on an unfinished run remains unknown. A finished review can
+be idle regardless of UI status or whether its recorded PIDs exist locally.
+Missing or contradictory records and unresolved SSH cleanup remain protected.
+
+A 120-second quiet period covers recent launch preparation, review writes and
+transitions to curation. The command rechecks relevant metadata and shared-worktree
+session membership without writing files or changing statuses. Unrelated review
+activity and ordinary queue polling do not make an idle candidate busy. Existing
+complete supervisor records work without migration.
+
+This observation covers tracked review activity, not arbitrary processes in every
+container. Combine it with local process/file checks and task ownership, and
+recheck immediately before removal. It is not a deletion lease. The workspace
+cleanup skill deletes eligible session data by default while retaining reviewed
+Git commits; archives require an explicit request. Existing keep instructions and
+archives are unaffected by changing this policy.
+
 ## Review queue
 
 The **Review queue** tab discovers open PRs requested from each configured

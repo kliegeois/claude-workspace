@@ -25,6 +25,11 @@ sessions after preservation checks. Show the concrete candidate summary in
 commentary and proceed; do not add a blanket confirmation step. Creating or
 editing this skill does not authorize running cleanup.
 
+Delete eligible session directories by default, including their review logs,
+comments, scratch files, and bundled runtimes. Archive sessions only when the
+user explicitly requests it. Preserve code history through Git refs; a routine
+cleanup must not replace disposable session data with large backup archives.
+
 Never remove canonical clones, shared Git directories, the current working
 directory or its ancestors, locked worktrees, explicitly retained items, or
 paths outside the selected cleanup roots. Task worktrees pinned to review
@@ -64,8 +69,13 @@ Apply active-use protections before age or PR status:
 
 - Keep worktrees used by live agents, queued/running review jobs, builds, tests,
   shells, or other processes with working directories or open files there.
-  Verify process identity, not just a saved PID. If access prevents checking
-  relevant local or remote activity, mark the item uncertain and retain it.
+  For peanut-review, read shared supervisor and launch metadata with
+  `cleanup-status` as described in the session reference; no server connection
+  or cross-container PID lookup is needed. Consistent final supervisor records
+  establish tracked reviewer inactivity. Check visible local processes and task
+  ownership separately for builds, shells, and other work. A running dashboard
+  or inability to inspect an unrelated container is not a blanket blocker.
+  Retain candidates with active, contradictory, or unresolved runtime evidence.
 - Keep work associated with a current task or explicit owner/keep instruction.
   An old task status alone is not proof of current use or abandonment; combine
   it with progress notes and runtime evidence.
@@ -92,6 +102,10 @@ abandonment waives the age threshold, not active-use or data-preservation checks
 
 ## Preserve work before removal
 
+Finish ownership, runtime, age, and PR eligibility checks before creating backup
+refs or any requested archives. Do not create archives for blocked or retained
+candidates. Do not archive entire worktrees merely to avoid classifying files.
+
 Inspect staged/unstaged changes, untracked files, ignored files, and nested
 repositories/submodules. Keep dirty worktrees or those containing unclassified
 local files; report the exact reason. Ignored does not mean disposable: identify
@@ -111,13 +125,15 @@ landed PR: use the confirmed PR state for classification and keep the original
 local history anyway.
 
 Preserve linked sessions' reviewed Git objects in the surviving canonical
-repository, and archive each retiring session as described in the reference.
-Failure to verify a required archive or Git object blocks that item; continue
-with independent candidates.
+repository as described in the reference, including when deleting the session.
+Failure to verify a required Git object blocks that item; continue with
+independent candidates. Session archives are optional, only on explicit request.
 
 Write a recovery manifest containing paths, branch/commit mappings, eligibility
-evidence, session archives/checksums, and exact restore instructions. Keep it
-and archives in a gitignored run directory under
+evidence, deleted session paths, and exact worktree restore instructions. Record
+that deleted session contents cannot be restored unless an archive was explicitly
+requested; include archive paths and checksums only when applicable. Keep the
+manifest and any requested archives in a gitignored run directory under
 `projects-emu/artifacts/worktree-cleanup/`; this also keeps mixed public/private
 results local. Do not embed real inventories or private details in tracked
 instructions or public artifacts. Preview mode must not create backup refs,
@@ -138,21 +154,21 @@ retain the item, not to fall back to recursive deletion. Resolve and validate
 path containment component by component; reject symlink substitutions and do
 not traverse nested mounts or repositories when deleting artifacts.
 
-Retire verified session directories independently when their own eligibility
-and archival checks pass. Do not delete entire session roots, queue state, or
+Delete session directories independently when their own eligibility and Git
+preservation checks pass. Do not delete entire session roots, queue state, or
 shared configuration. Missing-directory registrations are a separate repair:
 preview `git worktree prune --dry-run --verbose` and prune only if every proposed
 entry is confirmed abandoned and no unavailable mount or locked path explains
 its absence. Otherwise leave registrations alone; never prune indiscriminately.
 
 Verify removed checkouts are absent from both disk and `git worktree list`;
-retired sessions are absent from live roots and their archives verify. Confirm
-canonical/default branches, retained worktrees, local history, and retained
+deleted sessions are absent from live roots. Verify archives only when requested.
+Confirm canonical/default branches, retained worktrees, local history, and retained
 review snapshots still resolve. Keep recovery branches and session-retention
 refs; do not prune them or expire archives as part of ordinary cleanup.
 
 Report each removed, retired, retained, or failed item with the reason, plus
-total disk space reclaimed net of archives. Do not call archived bytes freed.
-Include recovery locations and preservation refs. Update local task handoff
+total disk space reclaimed net of any requested archives. Do not call archived
+bytes freed. Include recovery locations and preservation refs. Update local task handoff
 notes when paths changed and flush task-tracker state at session end. Do not
 publish review state, close PRs, delete remote branches, or push anything.

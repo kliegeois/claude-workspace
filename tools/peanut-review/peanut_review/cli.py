@@ -1421,6 +1421,21 @@ def cmd_retain_git(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_cleanup_status(args: argparse.Namespace) -> int:
+    """Read shared cleanup evidence without refreshing session status."""
+    from .cleanup import inspect_cleanup
+
+    directory = Path(_get_session_dir(args))
+    try:
+        result = inspect_cleanup(directory, [Path(root) for root in (args.root or [])],
+                                 worktree=args.worktree)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
+        print(json.dumps({"state": "unknown", "errors": [str(exc)]}, indent=2))
+        return 1
+    print(json.dumps(result, indent=2))
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """Show session status."""
     session_dir = _get_session_dir(args)
@@ -1961,6 +1976,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("retain-git", help="Retain pinned commits independently of the worktree")
     sp.add_argument("--repo", help="Surviving repository or Git directory for session recovery")
 
+    sp = sub.add_parser("cleanup-status", help="Read cleanup evidence from shared session metadata")
+    sp.add_argument("--root", action="append", help="Additional review root to inspect (repeatable)")
+    sp.add_argument("--worktree", help="Registered worktree in the same repository, even without a session")
+
     # status
     sp = sub.add_parser("status", help="Show session status")
 
@@ -2064,6 +2083,7 @@ def main(argv: list[str] | None = None) -> int:
         "verdict": cmd_verdict,
         "migrate": cmd_migrate,
         "status": cmd_status,
+        "cleanup-status": cmd_cleanup_status,
         "retain-git": cmd_retain_git,
         "archive": cmd_archive,
         "serve": cmd_serve,

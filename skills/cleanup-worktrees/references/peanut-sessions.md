@@ -1,83 +1,136 @@
-# Peanut-review session retirement
+# Peanut-review session cleanup
 
-This workflow manages whole session directories; it does not curate comments
-or run a review. Do not launch reviewers or curators for housekeeping. Consult
-the workspace [peanut-review skill](../../peanut-review/SKILL.md) for lifecycle
-context, and verify current behavior against the local CLI before using it.
+Manage whole session directories without launching reviewers, curating comments,
+or publishing review state. The workspace tool is
+`tools/peanut-review/bin/peanut-review`; inspect its current behavior when needed.
 
-## Inventory and activity
+## Discover sessions and runtime evidence
 
 Resolve `reviewRoot` from `.cache/peanut-review/.peanut-review.json` and any
-explicit additional roots used by the running UI. The usual root is
-`.cache/peanut-review/sessions/`, but use actual configuration. Enumerate real
-session directories containing `session.json`; shared configuration, `.queue/`,
-server PID files, and parent roots are not sessions. Do not assume a missing
-worktree means its saved review should be deleted.
+additional roots served by the UI. Inventory directories containing `session.json`
+independently of worktrees, including sessions whose checkout is gone. Shared
+configuration, `.queue/`, PID files, and parent roots are not sessions.
 
-Use `workspace` plus `repo_relative` for the execution repository,
-`git_common_dir` for durable Git storage, and `workspace_branch` for the saved
-branch. Saved GitHub metadata carries repository, PR, host, and account identity;
-preserve that identity when checking remote PR state.
+Join sessions to checkouts using `workspace` plus `repo_relative` and repository
+identity. `git_common_dir` identifies durable Git storage; `workspace_branch`
+records the branch. Preserve the saved GitHub host/account when checking PR state.
 
-The current tool has no separate session lifecycle status. `round-done`, a
-verdict, or a stale `AgentConfig.status` does not establish that a session is
-idle. Inspect signals, `log/<agent>/meta.json`, process/supervisor identities,
-SSH launch state where applicable, and queue jobs. In the current
-`review_queue.py`, `queued`, `preparing`, `reviewing`, and `curating` are active
-job states. Uncertain runtime ownership protects the session and its worktree.
+The dashboard can run in another Docker container. Its supervisors already write
+start times, heartbeats, terminal process states, end times and exit codes into
+shared `log/<agent>/meta.json` files. GitHub review runs also record launch IDs
+and start/finish times in `review-completion.json`. Read this evidence locally;
+server reachability and foreign PIDs are not prerequisites for cleanup.
 
-For preview, read metadata and inspect runtime without refreshing it:
-`peanut-review status` calls `refresh_agent_statuses` and may write session
-metadata. Do not instantiate a queue object just to inspect its files; its
-constructor can retire recorded jobs. Read queue state as data and inspect the
-running server/processes. Do not cancel jobs or restart the shared UI for cleanup.
+## Read-only metadata inspection
 
-## Retain Git objects
+On Linux with Bubblewrap available, run the workspace CLI inside a read-only
+mount and separate PID/network namespaces, passing every configured review root:
 
-Before removing a checkout needed by a retained or archived session, ensure its
-recorded base, topic, original head, current head, and earlier retained revisions
-remain readable through the surviving repository. The supported repair is:
+```bash
+bwrap --unshare-all --ro-bind / / --tmpfs /proc --die-with-parent \
+  --setenv PYTHONDONTWRITEBYTECODE 1 -- \
+  "$PR_BIN" --session "$session_path" cleanup-status --root "$review_root"
+```
+
+The empty `/proc` hides host process handles; it avoids needing permission to
+mount a new proc filesystem inside Docker. Existing files remain read-only,
+including the live session store. The checker cannot signal processes outside
+its PID namespace. Keep reports outside the sandbox by capturing stdout. If
+isolation fails during a live preview, report the failure instead of silently
+rerunning without it. Do not restart the server or change live runtime code to
+enable an inspection.
+
+Repeat `--root` for additional roots. The command includes every session sharing
+the checkout. For a registered checkout without a session, use another session
+in the same repository as the anchor and add `--worktree "$worktree_path"`.
+The response names its worktree, related sessions, per-agent evidence, active
+legacy queue jobs, recent activity, errors, and `state: idle|busy|unknown`.
+It reads shared files twice without refreshing statuses, creating locks,
+contacting a server, fetching Git data, or looking up saved PIDs.
+
+Interpret evidence as follows:
+
+- A recent unfinished launch or heartbeat protects the session as busy. The
+  supervisor normally writes heartbeats every 30 seconds; the reader allows
+  120 seconds. An old or missing heartbeat on an unfinished run means unknown,
+  never automatic abandonment or exit.
+- A consistent terminal supervisor state, integer exit code and ordered start/end
+  timestamps establish that the tracked reviewer finished. When a launch record
+  exists, its latest run must also be finished and covered by that final metadata.
+  A newer launch invalidates an older completion. Old sessions with complete
+  supervisor records do not require migration or a server restart.
+- `round-done`, `result.json`, UI agent status, and saved PIDs alone are not exit
+  evidence. Missing or malformed records, contradictory timestamps, and
+  unresolved SSH cleanup protect the candidate. Confirmed remote exit in shared
+  metadata is sufficient; do not require an SSH connection solely for inspection.
+- New prompts, review writes or runtime metadata impose a 120-second quiet period,
+  covering preparation and transitions between reviewers and curator. Relevant
+  file or session-membership changes during the read invalidate the observation.
+  Routine queue polling and activity on another checkout do not protect this one.
+
+An idle result covers tracked review activity only. Combine it with local process
+checks, task/progress notes, and local file checks for independently launched
+builds, tests, or shells. Retain a candidate when there is specific evidence of
+such use or unresolved ownership. Do not require access to every other container
+merely because it could hypothetically use a shared path.
+
+Recheck immediately before removal. The result is a point-in-time observation,
+not a deletion lease. In preview, do not repair stale metadata, run ordinary
+`peanut-review status`, or construct a review queue object: those can write shared
+state. Busy or unknown items remain intact; continue with independent idle ones.
+
+## Forwarded ports and status side effects
+
+A port published as `127.0.0.1:27183:27183` is bound to the Docker host's loopback.
+Neither another container's `localhost` nor the host's bridge gateway is that
+address. A VS Code/SSH forward to a laptop does not automatically make it
+reachable from the cleanup container. The `0.0.0.0` address in `web.pid` is a
+server bind address, not a usable client destination. Docker CLI availability
+also does not imply access to the daemon or another container's processes.
+
+Network access is optional for cleanup. If needed for separate diagnostics,
+use an established reachable URL or a host SSH tunnel; do not expose the service
+on all host interfaces or restart/reconfigure live containers just to inspect
+them. Ordinary session-page GETs and `/api/session` refresh and save statuses,
+so HTTP GET alone is not a read-only guarantee. Use the isolated metadata reader
+for cleanup evidence even when the dashboard is reachable.
+
+## Preserve Git history, then delete
+
+After eligibility and runtime checks pass, ensure recorded base, topic, original
+head, current head, and earlier retained review revisions remain readable in the
+surviving repository. During apply only, repair retention with:
 
 ```bash
 "$PR_BIN" --session "$session_path" retain-git --repo "$canonical_repo"
 ```
 
-Use the workspace `tools/peanut-review/bin/peanut-review` as `PR_BIN`. This repair
-writes session metadata and Git refs, so run it only during apply and while
-idle, before making the final archive. Verify all recorded commits resolve.
+Verify the commits and cumulative `refs/peanut-review/` refs. Keep these refs even
+when deleting the session; they preserve code history without retaining session
+logs or runtimes. Never guess the ref namespace from a directory name.
 
-The tool retains reviewed commits under `refs/peanut-review/`. These refs survive
-session-directory deletion and should remain for archived sessions. They are
-cumulative across revisions; do not guess their namespace from a session name
-or delete refs merely because no live directory matches. See
-`retain_review_git` in `tools/peanut-review/peanut_review/session.py` when needed.
+A normal cleanup invocation authorizes permanent deletion of eligible session
+contents, including review comments/history, reports, prompts, signals, logs,
+scratch files and bundled runtimes. Do not archive these by default, ask for a
+second deletion approval, or substitute `peanut-review archive` (which writes Git
+notes). Honor explicit keep instructions and separate user work stored there;
+retain a session if its contents cannot be classified as disposable session data.
 
-## Archive, remove from the live root, and restore
+Before deletion, recheck runtime evidence and source identity. Remove only the
+exact inventoried directory below a configured session root. Reject symlink
+substitutions, nested mounts or repositories; do not follow symlinks or delete
+external targets. Do not delete shared queue state or configuration. Verify that
+the directory is absent and other sessions remain discoverable. Record deletion
+and retained Git refs in the run manifest. Deleted session contents have no
+restore procedure; a removed worktree can be recreated from its preserved branch.
 
-`peanut-review archive` only appends comments to Git notes; it neither removes
-the session nor preserves all session data. It is not the backup for cleanup.
-The current CLI has no whole-session delete command; verify this against the
-installed CLI before deciding how to retire a directory.
+## Optional archives
 
-Create a complete compressed archive of each eligible idle session outside all
-live review roots, under the cleanup run directory specified in `SKILL.md`.
-Preserve relative paths, metadata, comments including deleted/history records,
-verdicts, notes, signals, prompts, logs, and other session files. Preserve symlinks
-as links without traversing them; retain or separately preserve any external
-target the session needs. Record original path and durable Git storage in the
-manifest. Never overwrite an existing archive.
-
-Before removing the live session, verify the archive by reading it back and
-comparing its entries, contents/checksums, and required metadata with the source.
-Recheck that the source and runtime state did not change during archival.
-Retain the source on verification failure or concurrent activity. Remove only
-the exact verified session directory; reject root paths, symlink substitutions,
-and nested mounts. Do not hand-edit shared queue state to hide old entries.
-
-Verify the remaining sessions are still discoverable. Record restoration steps:
-extract the verified archive back to its original session path without replacing
-an existing directory; use `git worktree add` with the preserved local branch
-to restore a removed checkout when execution is needed. Saved diffs can remain
-readable through `git_common_dir` without restoring the checkout. Archived data
-and retained Git refs remain local; permanent purge requires a separate explicit
-request and a fresh check for dependencies.
+Only when explicitly requested, archive an eligible idle session under the
+cleanup run directory before deleting it. Preserve all entries and symlinks
+without traversing external targets. Verify archive entries, contents and
+checksums against the source, then recheck activity and source stability before
+deletion. Retain the source on a failed check. Record archive location, checksum
+and extraction instructions that refuse to overwrite an existing directory.
+Subtract archived bytes from reclaimed space. Existing recovery archives are not
+automatically purged by changing this policy or running an ordinary cleanup.
