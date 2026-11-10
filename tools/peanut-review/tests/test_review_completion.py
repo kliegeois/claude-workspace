@@ -220,7 +220,12 @@ def test_queue_discovers_cli_session_and_tracks_completed_revision(review, monke
         assert context["session"] == str(directory)
         assert context["workspace"] == session.workspace
         assert "Refresh and re-review" in row["driver_task"]
-        complete_round(directory, session)
+        orphaned_review(review)
+        incomplete = q.payload()["items"][0]
+        assert incomplete["freshness"] == "incomplete"
+        assert incomplete["completion_detail"]
+        assert completion.completed_review(directory, session) is None
+        completion.recover_reviewer(directory, "Vera")
         assert q.payload()["items"][0]["freshness"] == "current"
         q.state["items"][key]["head_sha"] = "f" * 40
         assert q.payload()["items"][0]["freshness"] == "stale"
@@ -294,4 +299,128 @@ def test_completion_is_bound_to_account_and_pr(review):
     directory, session, git = review
     complete_round(directory, session)
     session.github = replace(session.github, account=GitHubAccount("github.com", "bob", 20))
+    assert completion.completed_review(directory, session) is None
+
+
+@pytest.mark.parametrize("signals_done", [False, True])
+def test_heartbeat_enospc_does_not_orphan_reviewer(review, monkeypatch, signals_done):
+    import errno
+    from peanut_review import runtime, supervisor
+
+    directory, session, _ = review
+    ids = completion.begin_launch(directory, session, sess.reviewer_agents(session))
+    original = runtime.update_agent_meta
+    failures = []
+
+    def fail_heartbeats(path, name, updates):
+        if updates.get("process_state") == "running" and "command" not in updates:
+            failures.append(updates)
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return original(path, name, updates)
+
+    monkeypatch.setattr(runtime, "update_agent_meta", fail_heartbeats)
+    monkeypatch.setattr(supervisor, "HEARTBEAT_INTERVAL_SECONDS", 0.01)
+    script = "import time; from pathlib import Path; time.sleep(0.1); "
+    if signals_done:
+        script += f"Path({str(directory / 'signals/Vera.round-done')!r}).write_text('done'); "
+    script += "time.sleep(30)"
+    result = supervise_agent(session_dir=directory, agent_name="Vera", timeout=0.3,
+        command=[sys.executable, "-c", script],
+        env={**os.environ, "PEANUT_REVIEW_RUN_ID": ids["Vera"]},
+        round_done_poll_interval=0.01, round_done_grace=0.01, kill_grace=0.1)
+    assert result != 0  # Child was reaped after completion or timeout.
+    assert failures
+    meta = runtime.read_agent_meta(directory, "Vera")
+    assert meta["timed_out"] is not signals_done
+    assert meta["stopped_after_round_done"] is signals_done
+    record = json.loads((directory / "review-completion.json").read_text())
+    assert record["runs"]["Vera"]["successful"] is signals_done
+    finish(directory, {"Irene": ids["Irene"]})
+    finish(directory, completion.begin_launch(directory, session, sess.curator_agents(session)))
+    assert bool(completion.completed_review(directory, session)) is signals_done
+
+
+def orphaned_review(review):
+    from peanut_review import polling
+    directory, session, _ = review
+    ids = completion.begin_launch(directory, session, sess.reviewer_agents(session))
+    finish(directory, {"Irene": ids["Irene"]})
+    polling.write_signal(directory, "Vera", "round-done")
+    finish(directory, completion.begin_launch(directory, session, sess.curator_agents(session)))
+    return directory, session
+
+
+def test_recover_orphaned_reviewer_is_explicit_and_preserves_history(review):
+    directory, session = orphaned_review(review)
+    path = directory / "review-completion.json"
+    original = path.read_bytes()
+    command = ["--session", str(directory), "recover-completion", "--agent", "Vera"]
+    assert cli.main([*command, "--dry-run"]) == 0
+    assert path.read_bytes() == original
+    assert completion.completed_review(directory, session) is None
+    assert cli.main(command) == 0
+    updated = json.loads(path.read_text())
+    before = json.loads(original)
+    assert updated["runs"]["Irene"] == before["runs"]["Irene"]
+    assert updated["runs"]["Curator"] == before["runs"]["Curator"]
+    assert updated["runs"]["Vera"]["id"] == before["runs"]["Vera"]["id"]
+    assert updated["runs"]["Vera"]["recovery"]["curator_run_id"] == before["runs"]["Curator"]["id"]
+    assert completion.completed_review(directory, session)["snapshot"] == completion.snapshot(session)
+    assert cli.main(command) == 1  # Cannot overwrite an existing terminal result.
+
+
+@pytest.mark.parametrize("invalid", [
+    "stale_signal", "late_signal", "missing_signal", "invalid_signal", "wrong_run",
+    "failed_curator", "failed_reviewer", "wrong_snapshot", "wrong_account", "dirty_launch",
+    "dirty_checkout", "moved_head", "live_agent", "exit_failure", "timeout", "remote",
+    "process_failure", "unfinished_peer",
+])
+def test_recovery_refuses_unproven_completion(review, monkeypatch, invalid):
+    from peanut_review import runtime, polling
+    directory, session = orphaned_review(review)
+    path = directory / "review-completion.json"
+    data = json.loads(path.read_text())
+    run = data["runs"]["Vera"]
+    signal = directory / "signals/Vera.round-done"
+    if invalid == "stale_signal":
+        run["initial_signal"] = signal.stat().st_mtime_ns
+    elif invalid == "late_signal":
+        polling.write_signal(directory, "Vera", "round-done")
+    elif invalid == "missing_signal":
+        signal.unlink()
+    elif invalid == "invalid_signal":
+        signal.write_text("not a timestamp")
+    elif invalid == "wrong_run":
+        data["runs"]["Curator"]["reviewer_runs"]["Vera"] = "other-run"
+    elif invalid == "failed_curator":
+        data["runs"]["Curator"]["successful"] = False
+    elif invalid == "failed_reviewer":
+        run["successful"] = False
+    elif invalid == "wrong_snapshot":
+        run["snapshot"]["head_sha"] = "f" * 40
+    elif invalid == "wrong_account":
+        run["target"]["account"]["login"] = "someone-else"
+    elif invalid == "dirty_launch":
+        run["workspace_matches"] = False
+    elif invalid == "dirty_checkout":
+        (Path(session.workspace) / "file").write_text("dirty")
+    elif invalid == "moved_head":
+        review[2]("commit", "--allow-empty", "-m", "later commit")
+    elif invalid == "live_agent":
+        monkeypatch.setattr(runtime, "is_process_live", lambda pid: True)
+    elif invalid == "exit_failure":
+        runtime.update_agent_meta(directory, "Vera", {"exit_code": 1})
+    elif invalid == "timeout":
+        runtime.update_agent_meta(directory, "Vera", {"timed_out": True})
+    elif invalid == "remote":
+        runtime.update_agent_meta(directory, "Vera", {"transport": "ssh"})
+    elif invalid == "process_failure":
+        runtime.update_agent_meta(directory, "Vera", {"process_state": "failed"})
+    elif invalid == "unfinished_peer":
+        data["runs"]["Irene"].pop("successful")
+    path.write_text(json.dumps(data))
+    original = path.read_bytes()
+    with pytest.raises(ValueError):
+        completion.recover_reviewer(directory, "Vera")
+    assert path.read_bytes() == original
     assert completion.completed_review(directory, session) is None

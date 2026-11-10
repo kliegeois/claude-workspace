@@ -495,6 +495,10 @@ class ReviewQueue:
             if not completed and session and (session.current_head != item.get("head_sha") or session.base_ref != item.get("base_sha")):
                 if item["freshness"] != "unknown":
                     item["freshness"] = "stale"
+            if (item["freshness"] == "unreviewed" and session
+                    and review_completion.incomplete_review(directory, session)):
+                item["freshness"] = "incomplete"
+                item["completion_detail"] = "Review started, but successful completion is not recorded."
             item["driver_task"] = self.driver_task(item, directory, session)
             rows.append(item)
         rows.sort(key=lambda item: (item.get("state") != "open", item["freshness"] != "stale", not item.get("requested"), item.get("repo", ""), item["number"]))

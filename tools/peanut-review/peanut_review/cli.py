@@ -1436,6 +1436,20 @@ def cmd_cleanup_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recover_completion(args: argparse.Namespace) -> int:
+    from . import review_completion
+    try:
+        evidence = review_completion.recover_reviewer(
+            _get_session_dir(args), args.agent, dry_run=args.dry_run,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    print(("Would recover" if args.dry_run else "Recovered") +
+          f" {evidence['agent']} run {evidence['run_id']} from its signal and completed curator")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """Show session status."""
     session_dir = _get_session_dir(args)
@@ -1983,6 +1997,10 @@ def build_parser() -> argparse.ArgumentParser:
     # status
     sp = sub.add_parser("status", help="Show session status")
 
+    sp = sub.add_parser("recover-completion", help="Recover a signaled reviewer after supervisor loss")
+    sp.add_argument("--agent", required=True, help="Reviewer with missing terminal bookkeeping")
+    sp.add_argument("--dry-run", action="store_true", help="Validate evidence without changing records")
+
     # archive
     sp = sub.add_parser("archive", help="Export comments to git notes")
     sp.add_argument("--ref", help="Git notes ref (default: refs/notes/peanut-review)")
@@ -2083,6 +2101,7 @@ def main(argv: list[str] | None = None) -> int:
         "verdict": cmd_verdict,
         "migrate": cmd_migrate,
         "status": cmd_status,
+        "recover-completion": cmd_recover_completion,
         "cleanup-status": cmd_cleanup_status,
         "retain-git": cmd_retain_git,
         "archive": cmd_archive,

@@ -395,6 +395,24 @@ partial reviewer failure does not certify a complete review in the dashboard:
 all configured reviewers and a subsequent curator must still succeed on the
 same snapshot. Failed or incomplete reviews must not receive an LGTM approval.
 
+Heartbeat write errors are logged without abandoning the supervised process or
+its timeout. If a supervisor was lost before recording its terminal result,
+the queue shows **Completion unconfirmed** instead of **Not reviewed**.
+After inspecting the reviewer log and report, an operator can recover one
+orphaned local reviewer without spending another model run:
+
+```bash
+"$PR_BIN" --session "$SESSION" recover-completion --agent Vera --dry-run
+"$PR_BIN" --session "$SESSION" recover-completion --agent Vera
+```
+
+Recovery requires an idle, clean checkout at the pinned revision, a fresh
+completion signal that predates curation, and a successful curator covering
+these exact reviewer run IDs. Every other configured agent must have succeeded
+on the same snapshot and account. It refuses recorded failures, stale signals,
+remote runs and replaced launches. It records recovery evidence separately
+without inventing an exit code, replacing comments, or launching agents.
+
 When **curate** finds that its recorded PR worktree is missing, it reuses the
 saved local branch's worktree if that branch has moved to another directory.
 Otherwise it restores the branch at the original source path using retained
@@ -838,7 +856,10 @@ snapshot and unique run IDs in the session's `review-completion.json`.
 Supervisors record completion only after fresh completion signals and successful
 exits (including supervised shutdown after completion). All configured reviewers
 and a subsequent curator covering those runs must complete against the same
-snapshot. This also works when the dashboard is stopped. A push during a review
+snapshot. Explicit `recover-completion` can repair a missing reviewer result
+when the preserved launch, signal, and completed curator prove that same round;
+it does not infer a process exit or recover legacy signals without run records.
+This also works when the dashboard is stopped. A push during a review
 leaves the completed result stale; fetching or synchronizing alone cannot mark
 it reviewed. Stale polling or an API failure produces **Unknown**.
 

@@ -104,10 +104,11 @@
       const progress = item.session_progress?.status || "pending";
       review.append(node("span", item.session_progress?.label || "Not started", `badge review-progress progress-${progress}`));
       const freshness = node("td");
-      const freshLabels = { current: "Up to date", stale: "Stale", unknown: "Unknown", unreviewed: "Not reviewed" };
+      const freshLabels = { current: "Up to date", stale: "Stale", unknown: "Unknown", unreviewed: "Not reviewed", incomplete: "Completion unconfirmed" };
       freshness.append(node("span", freshLabels[item.freshness], `queue-freshness freshness-${item.freshness}`));
       const detail = item.completed_snapshot ? `Reviewed ${item.completed_snapshot.head_sha.slice(0, 8)} · latest ${(item.head_sha || "").slice(0, 8)}` : item.head_sha ? `Latest ${item.head_sha.slice(0, 8)}` : "";
       freshness.append(node("div", detail, "sub mono"), node("div", relativeTime(item.checked_at), "sub"));
+      if (item.completion_detail) freshness.append(node("div", item.completion_detail, "queue-detail"));
       if (item.error) freshness.append(node("div", item.error, "queue-detail error"));
       const actions = node("td", null, "queue-actions");
       if (item.session_id) {

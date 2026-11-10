@@ -114,7 +114,15 @@ def _record_runtime_heartbeat(
     }
     if extra:
         updates.update(extra)
-    runtime.update_agent_meta(session_dir, agent_name, updates)
+    try:
+        runtime.update_agent_meta(session_dir, agent_name, updates)
+    except OSError as exc:
+        # A failed status write must not orphan the child or disable its timeout.
+        # The next heartbeat and terminal write retry persistence independently.
+        try:
+            print(f"Warning: could not save {agent_name} heartbeat: {exc}", file=sys.stderr)
+        except OSError:
+            pass  # The log may be on the same full filesystem.
 
 
 def _runner_env_meta(env: dict[str, str]) -> dict[str, str]:
