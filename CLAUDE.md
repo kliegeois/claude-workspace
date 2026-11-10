@@ -15,6 +15,9 @@ Each subdirectory under `projects/` is an independent git repository. Sub-repos 
   - Before adding, changing, or reviewing rocjitsu code, read and follow
     `emulation/rocjitsu/docs/style.md` in the active checkout or task worktree.
     Treat it as authoritative over generic workspace C++ style guidance.
+  - Use `skills/rocjitsu-build-test/` for local builds, including compressed
+    debug information for fresh build directories. Reviewers should reuse the
+    prepared build for the same revision and configuration.
   - The useful sparse-checkout context is `emulation/rocjitsu/`,
     `projects/rocr-runtime/`, `shared/machine-readable-isa/isa/`, and `.github/`.
   - Runtime source context: `projects/rocr-runtime/` (ROCR and libhsakmt)

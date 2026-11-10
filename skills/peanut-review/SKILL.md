@@ -418,7 +418,13 @@ explicitly asks.
    SESSION=<printed-session-path>
    ```
 
-3. Build/test the checkout with the project workflow. If reviewers need
+3. Build/test the checkout with the project workflow. For rocjitsu, use
+   [rocjitsu-build-test](../rocjitsu-build-test/SKILL.md), including its compressed
+   debug defaults for fresh builds. Prepare one build for the reviewed revision
+   and tell reviewers its path, compiler, mode and available test binaries in
+   the launch context. Reuse that build for ordinary verification; separate
+   builds are for changed snapshots, mutations or different configurations.
+   If reviewers need
    non-obvious tool paths, make them available through the runner workspace
    or rendered prompt before launch; do not use Agent reports as setup chat.
 

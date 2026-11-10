@@ -114,6 +114,18 @@ configuration, credentials, or results. Remove rebuildable output only as part
 of an otherwise eligible checkout. Do not use `git clean`, `reset --hard`, or a
 blanket force-removal to overcome refusal.
 
+When an otherwise eligible idle checkout is retained solely because it contains
+nested dependency repositories, reclaim its known generated build outputs
+without removing those repositories. For a CMake/Ninja build, preview with
+`ninja -C "$build_path" -n -v -t clean`. Check every proposed output against the
+build graph, tracked files, path boundaries and nested repositories; external
+dependency build directories must be inside the same worktree and separately
+classified. If all outputs are disposable and the ownership/runtime recheck
+still passes, run `ninja -C "$build_path" -t clean`. Preserve source, dependency
+clones, configuration, logs and user results. Record the reclaimed bytes and
+rebuild command in the manifest and task handoff. Do not clean active or
+explicitly pinned builds, and do not add `-g` to remove generator outputs.
+
 Preserve local branches, including unmerged and unpushed history. Worktree
 removal does not require branch deletion. For a detached HEAD not retained by
 a surviving local branch/ref, create and verify a uniquely named local backup

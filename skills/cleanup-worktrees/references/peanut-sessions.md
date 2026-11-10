@@ -27,7 +27,7 @@ On Linux with Bubblewrap available, run the workspace CLI inside a read-only
 mount and separate PID/network namespaces, passing every configured review root:
 
 ```bash
-bwrap --unshare-all --ro-bind / / --tmpfs /proc --die-with-parent \
+bwrap --unshare-all --ro-bind / / --dev /dev --tmpfs /proc --die-with-parent \
   --setenv PYTHONDONTWRITEBYTECODE 1 -- \
   "$PR_BIN" --session "$session_path" cleanup-status --root "$review_root"
 ```
@@ -39,6 +39,9 @@ its PID namespace. Keep reports outside the sandbox by capturing stdout. If
 isolation fails during a live preview, report the failure instead of silently
 rerunning without it. Do not restart the server or change live runtime code to
 enable an inspection.
+
+The private `/dev` supplies usable null devices for Git subprocesses without
+exposing host process handles or making the session store writable.
 
 Repeat `--root` for additional roots. The command includes every session sharing
 the checkout. For a registered checkout without a session, use another session
