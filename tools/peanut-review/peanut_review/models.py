@@ -237,11 +237,11 @@ class AgentConfig:
     pgid: int | None = None
     supervisor_pid: int | None = None
     # Backend runner: "cursor" (cursor-agent), "opencode" (opencode run),
-    # or "codex" (codex exec).
+    # "codex" (codex exec), or "copilot" (copilot -p).
     runner: str = "cursor"
     # Optional name in Session.ssh_targets. Runner selection stays orthogonal:
     # cursor/opencode/codex choose the model wrapper, ssh_target chooses where
-    # that wrapper runs.
+    # that wrapper runs. The copilot runner is local only.
     ssh_target: str | None = None
 
     def to_dict(self) -> dict:

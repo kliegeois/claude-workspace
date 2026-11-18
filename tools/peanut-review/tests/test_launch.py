@@ -523,6 +523,56 @@ def test_launch_dry_run_can_enable_codex_fast_mode():
     assert "--no-fast-mode" not in result["cmd"]
 
 
+def test_launch_dry_run_copilot_agent_cmd():
+    sd = _make_session_dir([
+        AgentConfig(
+            name="cleo",
+            model="gpt-6-astra",
+            reasoning_effort="xhigh",
+            persona="vera.md",
+            runner="copilot",
+        ),
+    ])
+
+    [result] = launch.launch_agents(sd, dry_run=True)
+
+    cmd = result["cmd"]
+    assert cmd[0].endswith("copilot-agent-task.sh")
+    assert cmd[cmd.index("--model") + 1] == "gpt-6-astra"
+    assert cmd[cmd.index("--reasoning-effort") + 1] == "xhigh"
+    # Codex-only wrapper flags would be rejected by the Copilot wrapper.
+    assert "--sandbox" not in cmd
+    assert "--no-fast-mode" not in cmd
+
+
+def test_copilot_runner_blocks_edits_pushes_and_skills(tmp_path):
+    script = launch._find_launcher_script("copilot")
+
+    proc = subprocess.run(
+        [
+            script,
+            "--model", "gpt-6-astra",
+            "--reasoning-effort", "xhigh",
+            "--workspace", str(tmp_path),
+            "--output-dir", str(tmp_path / "log"),
+            "--name", "vera",
+            "--prompt", "review this",
+            "--dry-run",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    printed = proc.stderr.splitlines()[-1]
+    assert "--deny-tool=write" in printed
+    assert "git\\ push" in printed
+    assert "--excluded-tools=skill" in printed
+    assert "--model gpt-6-astra" in printed
+    assert "--reasoning-effort xhigh" in printed
+    assert printed.rstrip().endswith("-p review\\ this")
+
+
 @pytest.mark.parametrize(
     ("wrapper_flag", "codex_flag"),
     [
@@ -876,8 +926,9 @@ def test_runner_wrappers_exec_without_shell_timeout():
     cursor = (base / "cursor-agent-task.sh").read_text()
     opencode = (base / "opencode-agent-task.sh").read_text()
     codex = (base / "codex-agent-task.sh").read_text()
+    copilot = (base / "copilot-agent-task.sh").read_text()
 
-    for text in (cursor, opencode, codex):
+    for text in (cursor, opencode, codex, copilot):
         assert '\ntimeout "$timeout_secs"' not in text
 
     assert "exec cursor-agent --print" in cursor

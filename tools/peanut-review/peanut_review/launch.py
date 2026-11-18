@@ -29,6 +29,7 @@ _LAUNCHER_SCRIPTS = {
     "cursor": "cursor-agent-task.sh",
     "opencode": "opencode-agent-task.sh",
     "codex": "codex-agent-task.sh",
+    "copilot": "copilot-agent-task.sh",
 }
 
 
@@ -487,6 +488,8 @@ def _build_agent_cmd(
         if agent.reasoning_effort:
             cmd += ["--reasoning-effort", agent.reasoning_effort]
         cmd.append("--fast-mode" if agent.fast_mode is True else "--no-fast-mode")
+    elif agent.runner == "copilot" and agent.reasoning_effort:
+        cmd += ["--reasoning-effort", agent.reasoning_effort]
     return cmd
 
 

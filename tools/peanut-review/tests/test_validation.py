@@ -106,6 +106,33 @@ def test_validate_project_config_rejects_invalid_fast_mode(tmp_path: Path):
     assert "agents[1].fastMode must be a boolean" in message
 
 
+def test_validate_project_config_accepts_copilot_reasoning_effort(tmp_path: Path):
+    (tmp_path / "repo").mkdir()
+    personas = tmp_path / "personas"
+    personas.mkdir()
+    (personas / "vera.md").write_text("persona\n")
+
+    cfg = validation.validate_project_config(
+        {
+            "reviewRoot": "reviews",
+            "workspaceRoot": ".",
+            "repoRelative": "repo",
+            "personasDir": "personas",
+            "agents": [{
+                "name": "vera",
+                "model": "gpt-6-astra",
+                "reasoningEffort": "xhigh",
+                "persona": "vera.md",
+                "runner": "copilot",
+            }],
+        },
+        config_path=tmp_path / ".peanut-review.json",
+    )
+
+    assert cfg["agents"][0]["runner"] == "copilot"
+    assert cfg["agents"][0]["reasoningEffort"] == "xhigh"
+
+
 def test_validate_project_config_reports_actionable_errors(tmp_path: Path):
     workspace = tmp_path / "repo"
     workspace.mkdir()
@@ -263,6 +290,7 @@ def test_validate_project_config_normalizes_ssh_targets(tmp_path: Path):
 @pytest.mark.parametrize("mutation, expected", [
     (("agent", "missing"), "references unknown target"),
     (("curator", "docs-host"), "not supported for curator"),
+    (("runner", "copilot"), "not supported with runner 'copilot'"),
     (("gateway", "http://example.com:1234"), "IPv4 loopback"),
     (("gateway", "http://127.0.0.1:80@outside.example"), "IPv4 loopback"),
     (("gateway", "http://[::1]:27184"), "IPv4 loopback"),
@@ -289,12 +317,15 @@ def test_validate_project_config_rejects_invalid_ssh_target(
         "buildRoots": ["/srv/project/build"],
     }
     role = "reviewer"
+    runner = "codex"
     target_name = "docs-host"
     kind, value = mutation
     if kind == "agent":
         target_name = value
     elif kind == "curator":
         role = kind
+    elif kind == "runner":
+        runner = value
     elif kind == "gateway":
         target["gatewayUrl"] = value
     elif kind == "control":
@@ -315,7 +346,7 @@ def test_validate_project_config_rejects_invalid_ssh_target(
                 "sshTargets": {"docs-host": target},
                 "agents": [{
                     "name": "remote", "model": "gpt", "persona": "remote.md",
-                    "runner": "codex", "role": role, "sshTarget": target_name,
+                    "runner": runner, "role": role, "sshTarget": target_name,
                 }],
             },
             config_path=tmp_path / ".peanut-review.json",

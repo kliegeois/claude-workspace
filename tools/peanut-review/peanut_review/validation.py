@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from .models import AgentConfig, AgentRole, SshTarget
 
 
-SUPPORTED_RUNNERS = {"cursor", "opencode", "codex"}
+SUPPORTED_RUNNERS = {"cursor", "opencode", "codex", "copilot"}
 AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -110,8 +110,11 @@ def _validate_agent_configs(
         if reasoning_effort:
             if not isinstance(reasoning_effort, str) or not reasoning_effort.strip():
                 errors.append(f"{label}.reasoningEffort must be a non-empty string")
-            elif runner != "codex":
-                errors.append(f"{label}.reasoningEffort is only supported with runner 'codex'")
+            elif runner not in {"codex", "copilot"}:
+                errors.append(
+                    f"{label}.reasoningEffort is only supported with runners "
+                    "'codex' and 'copilot'"
+                )
 
         fast_mode = agent.get("fastMode", agent.get("fast_mode"))
         if fast_mode is not None:
@@ -128,6 +131,8 @@ def _validate_agent_configs(
                 errors.append(f"{label}.sshTarget references unknown target {ssh_target!r}")
             elif role == AgentRole.CURATOR.value:
                 errors.append(f"{label}.sshTarget is not supported for curator agents")
+            elif runner == "copilot":
+                errors.append(f"{label}.sshTarget is not supported with runner 'copilot'")
 
         try:
             agents.append(AgentConfig.from_dict(agent).to_dict())

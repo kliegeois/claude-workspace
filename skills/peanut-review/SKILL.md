@@ -690,6 +690,9 @@ forwarding requests.
 - **codex**: `codex exec`; requires `codex login` and gets
   `--add-dir <session>` so it can write session files. Set per-agent
   `"fastMode": true` to enable Codex fast mode. It defaults to `false`.
+- **copilot**: `copilot -p` with the signed-in GitHub Copilot CLI account;
+  accepts `reasoningEffort`. Shell access is open, while file-editing tools,
+  `git push`, and skills are disabled. Local only, no `sshTarget`.
 
 Agents submit findings, comment replies, non-review reports, and completion
 signals with peanut-review CLI commands from the rendered prompt. The `note`

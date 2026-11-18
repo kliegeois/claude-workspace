@@ -237,13 +237,18 @@ repository from the current working directory and stores sessions under
 `<repo>-pr-<number>-<change>`. Because the shared config is outside development
 worktrees, pass its absolute path with `--config`.
 
-Supported runners: `cursor`, `opencode`, `codex`.
+Supported runners: `cursor`, `opencode`, `codex`, `copilot`.
 Each agent selects its own runner and model, so one session can mix them.
 For Cursor, use an exact model ID from `cursor-agent --list-models` and verify
 authentication with `cursor-agent status`. Cursor model IDs can include the
 effort level, such as `grok-4.7-xhigh` or `claude-opus-5-5-xhigh`.
 Remove `reasoningEffort` and `fastMode` when switching an entry to Cursor;
-both settings are supported only by the Codex runner.
+`fastMode` is supported only by the Codex runner and `reasoningEffort` only by
+the Codex and Copilot runners.
+
+The Copilot runner uses `copilot -p` with the signed-in GitHub Copilot CLI
+account. Reviewers can run shell commands, but file-editing tools, `git push`,
+and skills are disabled. It runs locally only; `sshTarget` is not supported.
 Codex agents accept an optional per-agent `fastMode` boolean. It defaults to
 `false`; set it to `true` to enable Codex fast mode for a specific agent.
 GitHub PR sessions require a configured agent with `"role": "curator"` because
