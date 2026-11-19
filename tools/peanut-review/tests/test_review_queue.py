@@ -79,6 +79,53 @@ def test_search_paginates_and_rejects_incomplete(monkeypatch):
             review_queue.search_requests("alice")
 
 
+def test_extra_searches_track_prs_without_marking_them_requested(queue, monkeypatch):
+    queue.config["accounts"][0]["extraSearches"] = ['repo:acme/widget label:"area: widgets"']
+    searched = []
+    def search_prs(terms):
+        searched.append(terms)
+        return [{"html_url": "https://github.com/acme/widget/pull/2"}]
+    monkeypatch.setattr(gh, "account_auth", authenticate)
+    monkeypatch.setattr(review_queue, "search_requests", lambda login: [{"html_url": remote()["url"]}])
+    monkeypatch.setattr(review_queue, "search_prs", search_prs)
+    monkeypatch.setattr(review_queue, "fetch_pr", lambda repo, number: remote(
+        number=number, url=f"https://github.com/acme/widget/pull/{number}",
+        request_kind="direct" if number == 1 else None))
+    monkeypatch.setattr(gh, "_api", lambda *args, **kwargs: "[]")
+    queue.refresh()
+    rows = {row["number"]: row for row in queue.payload()["items"]}
+    assert searched == ['repo:acme/widget label:"area: widgets"']
+    assert rows[1]["requested"] and not rows[2]["requested"]
+    assert rows[2]["request_kind"] is None
+
+
+def test_newly_discovered_prs_are_fetched_first(queue, monkeypatch):
+    add_item(queue)
+    fetched = []
+    def fetch_pr(repo, number):
+        fetched.append(number)
+        return remote(number=number, url=f"https://github.com/acme/widget/pull/{number}")
+    monkeypatch.setattr(gh, "account_auth", authenticate)
+    monkeypatch.setattr(review_queue, "search_requests", lambda login: [
+        {"html_url": "https://github.com/acme/widget/pull/1"}, {"html_url": "https://github.com/acme/widget/pull/2"}])
+    monkeypatch.setattr(review_queue, "fetch_pr", fetch_pr)
+    queue.refresh()
+    assert fetched == [2, 1]
+
+
+def test_extra_searches_are_validated(tmp_path):
+    path = tmp_path / "queue.json"
+    for searches, valid in ((['label:"project: widget"'], True), ("label:widget", False), ([" "], False)):
+        path.write_text(json.dumps({"accounts": [{"login": "alice", "extraSearches": searches}]}))
+        if valid:
+            assert review_queue.load_config(path)["accounts"][0]["extraSearches"] == searches
+        else:
+            with pytest.raises(ValueError, match="extraSearches"):
+                review_queue.load_config(path)
+    path.write_text(json.dumps({"accounts": [{"login": "alice"}]}))
+    assert review_queue.load_config(path)["accounts"][0]["extraSearches"] == []
+
+
 def test_fetch_validates_target_and_request_kind(monkeypatch):
     data = {"html_url": "https://github.com/acme/widget/pull/1", "head": {"sha": "a" * 40, "ref": "feature"},
             "base": {"sha": "b" * 40, "ref": "main"}, "title": "Widgets", "user": {"login": "carol"},
@@ -197,21 +244,43 @@ def test_withdrawal_uses_latest_account_activity(monkeypatch, last_event, withdr
     assert not result["requested"]
 
 
-@pytest.mark.parametrize("current_teams,member_teams,withdrawn", [
-    ([], {101}, True),
-    ([], {202}, False),
-    ([101], {101}, False),
-    ([202], {101}, True),
-    ([202], {101, 202}, False),
+@pytest.mark.parametrize("current_teams,member_teams", [
+    ([], {101}),
+    ([], {202}),
+    ([101], {101}),
+    ([202], {101}),
+    ([202], {101, 202}),
 ])
-def test_team_withdrawal_only_applies_to_selected_accounts_teams(monkeypatch, current_teams, member_teams, withdrawn):
+def test_team_removal_keeps_pr_visible(monkeypatch, current_teams, member_teams):
     events = [{"event": action, "requested_team": {"id": 101}}
               for action in ("review_requested", "review_request_removed")]
     monkeypatch.setattr(gh, "_api", lambda *args, **kwargs: json.dumps(events))
     result = review_queue.request_origin(remote(request_kind=None, requested_team_ids=current_teams),
                                         {}, ACCOUNT, {"ids": member_teams})
-    assert result["request_withdrawn"] is withdrawn
+    assert result["request_withdrawn"] is False
     assert result["requested"] is bool(set(current_teams) & member_teams)
+
+
+def test_team_removal_does_not_mask_direct_withdrawal(monkeypatch):
+    monkeypatch.setattr(gh, "_api", lambda *args, **kwargs: json.dumps([
+        {"event": "review_requested", "requested_team": {"id": 101}},
+        {"event": "review_requested", "requested_reviewer": {"id": 10}},
+        {"event": "review_request_removed", "requested_reviewer": {"id": 10}},
+        {"event": "review_request_removed", "requested_team": {"id": 101}},
+    ]))
+    result = review_queue.request_origin(remote(request_kind=None), {}, ACCOUNT, {"ids": {101}})
+    assert result["request_withdrawn"] and not result["requested"]
+
+
+def test_later_team_request_overrides_direct_withdrawal(monkeypatch):
+    monkeypatch.setattr(gh, "_api", lambda *args, **kwargs: json.dumps([
+        {"event": "review_requested", "requested_reviewer": {"id": 10}},
+        {"event": "review_request_removed", "requested_reviewer": {"id": 10}},
+        {"event": "review_requested", "requested_team": {"id": 101}},
+        {"event": "review_request_removed", "requested_team": {"id": 101}},
+    ]))
+    result = review_queue.request_origin(remote(request_kind=None), {}, ACCOUNT, {"ids": {101}})
+    assert not result["request_withdrawn"] and not result["requested"]
 
 
 def test_current_team_request_keeps_direct_withdrawal_visible(monkeypatch):
@@ -225,6 +294,44 @@ def test_current_team_request_keeps_direct_withdrawal_visible(monkeypatch):
     assert result["request_kind"] == "direct"
 
 
+@pytest.mark.parametrize("events,approved", [
+    ([{"event": "reviewed", "user": {"id": 10}, "state": "APPROVED"}], True),
+    ([{"event": "reviewed", "user": {"id": 10}, "state": "approved"},
+      {"event": "reviewed", "user": {"id": 10}, "state": "commented"}], True),
+    ([{"event": "reviewed", "user": {"id": 10}, "state": "approved"},
+      {"event": "reviewed", "user": {"id": 10}, "state": "changes_requested"}], False),
+    ([{"event": "reviewed", "user": {"id": 10}, "state": "approved"},
+      {"event": "review_requested", "requested_team": {"id": 101}}], True),
+    ([{"event": "reviewed", "user": {"id": 10}, "state": "approved"},
+      {"event": "review_requested", "requested_reviewer": {"id": 10}},
+      {"event": "review_request_removed", "requested_reviewer": {"id": 10}}], False),
+    ([{"event": "reviewed", "user": {"id": 20, "login": "bob"}, "state": "approved"}], False),
+    ([{"event": "reviewed", "user": {"id": 10}, "state": "dismissed"}], False),
+])
+def test_approval_tracks_latest_decisive_account_review(monkeypatch, events, approved):
+    for index, event in enumerate(events):
+        event["submitted_at" if event["event"] == "reviewed" else "created_at"] = f"2026-01-01T00:00:0{index}Z"
+    monkeypatch.setattr(gh, "_api", lambda *args, **kwargs: json.dumps(events))
+    result = review_queue.request_origin(remote(request_kind=None), {}, ACCOUNT, {"ids": {101}})
+    assert result["approved"] is approved
+
+
+def test_pending_direct_request_is_not_approved():
+    result = review_queue.request_origin(remote(), {"approved": True}, ACCOUNT, {})
+    assert result["approved"] is False
+
+
+def test_cached_history_without_review_states_is_refetched(monkeypatch):
+    monkeypatch.setattr(gh, "_api", lambda *args, **kwargs: json.dumps([
+        {"event": "reviewed", "user": {"id": 10}, "state": "approved"}]))
+    metadata = remote(request_kind=None, updated_at="unchanged")
+    previous = {"request_history": [{"event": "reviewed", "team_id": None}],
+                "request_history_updated_at": "unchanged", "requested_team_ids": []}
+    result = review_queue.request_origin(metadata, previous, ACCOUNT, {})
+    assert result["approved"] is True
+    assert result["request_history"][0]["state"] == "approved"
+
+
 def test_team_removal_rechecks_history_even_if_updated_at_is_unchanged(monkeypatch):
     events = [{"event": "review_requested", "requested_team": {"id": 101}}]
     monkeypatch.setattr(gh, "_api", lambda *args, **kwargs: json.dumps(events))
@@ -232,7 +339,10 @@ def test_team_removal_rechecks_history_even_if_updated_at_is_unchanged(monkeypat
     previous = {**metadata, **review_queue.request_origin(metadata, {}, ACCOUNT, {"ids": {101}})}
     events.append({"event": "review_request_removed", "requested_team": {"id": 101}})
     result = review_queue.request_origin({**metadata, "requested_team_ids": []}, previous, ACCOUNT, {"ids": {101}})
-    assert result["request_withdrawn"] and not result["requested"]
+    assert result["request_history"] == [{"event": "review_requested", "team_id": 101},
+                                         {"event": "review_request_removed", "team_id": 101}]
+    assert not result["request_withdrawn"] and not result["requested"]
+    assert result["request_kind"] == "team"
 
 
 @pytest.mark.parametrize("withdrawn", [False, True])

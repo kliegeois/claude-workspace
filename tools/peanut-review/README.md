@@ -626,21 +626,26 @@ archives are unaffected by changing this policy.
 
 The **Review queue** tab discovers open PRs requested from each configured
 GitHub account, including team requests. It shares the existing server and
-session pages. PRs remain tracked after review submission, but explicitly
-removing your review request (or your team's request) hides the PR once no
-request remains for you. A new request brings it back. Existing review sessions
+session pages. PRs remain tracked after review submission, including after
+another reviewer reviews, approves, or removes a team request. Only explicitly
+removing your direct review request hides the PR once no request remains for
+you. A new request brings it back. Existing review sessions
 and history are preserved on the session pages. Closed PRs are available through
 **Include closed PRs**. Account failures retain cached rows and show an error.
 
-The request-type filter defaults to **Direct request**, and the review-status
-filter defaults to **All open PRs**. Select **Team request**
-or **All request types** as needed, alongside the account, search, and
+The request-type filter defaults to **All request types**, and the review-status
+filter defaults to **All open PRs**. Select **Direct request**
+or **Team request** as needed, alongside the account, search, and
 review-status filters. Direct and team categories retain
 the request origin after review submission. Historical requests are recovered
 from the PR timeline; team requests must match a team of the selected account.
 Direct takes precedence when both apply. Tracked PRs without a known request
 origin show **No known request** and remain visible under **All request types**.
 The separate **Review requested** status filter still selects pending requests.
+**Hide PRs I approved**, **Hide drafts**, and **Hide stale** are remembered in
+the browser. A PR
+counts as approved when your latest approving or change-requesting review is an
+approval and you have not been directly re-requested since.
 History or membership lookup
 failures appear on the row and are retried without discarding known origins.
 
@@ -773,6 +778,14 @@ root when `path` is explicit. `repositories` is a checkout mapping, not a PR
 discovery allowlist; account-wide review requests can include unmapped repos.
 These paths are included in the copied driver task. The driver handles
 clone/worktree setup and discovers any missing settings.
+
+`extraSearches` is an optional per-account list of GitHub search terms, such as
+`"repo:example-public-org/widget label:\"area: widgets\""`. Each is prefixed with
+`is:pr is:open` and polled with the review-request search. Matching PRs are
+tracked without being marked as requested. Use them for PRs that GitHub's
+`review-requested:` search drops, for example when another team member already
+reviewed for a team you belong to. Each search costs at least one request
+against GitHub's search rate limit (30 per minute) per poll.
 
 `prepare` is an optional list of command argument arrays included as setup
 context in the copied task. The driver follows project build/test instructions

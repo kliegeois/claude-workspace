@@ -62,6 +62,10 @@ def load_config(path: str | Path) -> dict:
         account.setdefault("label", account["login"])
         if not isinstance(account["label"], str):
             raise ValueError("account label must be a string")
+        searches = account.setdefault("extraSearches", [])
+        if not isinstance(searches, list) or any(
+                not isinstance(terms, str) or not terms.strip() for terms in searches):
+            raise ValueError("extraSearches must be an array of nonempty search strings")
         repositories = account.setdefault("repositories", {})
         if not isinstance(repositories, dict):
             raise ValueError("repositories must map owner/repo to checkout configuration")
@@ -93,11 +97,15 @@ def load_config(path: str | Path) -> dict:
 
 
 def search_requests(login: str) -> list[dict]:
+    return search_prs(f"review-requested:{login}")
+
+
+def search_prs(terms: str) -> list[dict]:
     """Fetch every search page; never silently report a truncated queue."""
     items = []
     page = 1
     while True:
-        query = urlencode({"q": f"is:pr is:open review-requested:{login}",
+        query = urlencode({"q": f"is:pr is:open {terms}",
                            "per_page": 100, "page": page})
         result = json.loads(gh._api(f"search/issues?{query}"))
         if result.get("incomplete_results") or result["total_count"] > 1000:
@@ -152,8 +160,22 @@ def request_history(repo: str, number: int, account: GitHubAccount) -> list[dict
                    else reviewer.get("login", "").casefold() == account.login.casefold())
         team_id = (event.get("requested_team") or {}).get("id")
         if matches or team_id is not None:
-            history.append({"event": action, "team_id": team_id})
+            entry = {"event": action, "team_id": team_id}
+            if action == "reviewed":
+                entry["state"] = (event.get("state") or "").lower()
+            history.append(entry)
     return history
+
+
+def approved_by_account(history: list[dict]) -> bool:
+    """Commented reviews keep an earlier approval; a new direct request asks for another look."""
+    approved = False
+    for event in history:
+        if event["event"] == "reviewed" and event.get("state") in {"approved", "changes_requested", "dismissed"}:
+            approved = event["state"] == "approved"
+        elif event["event"] == "review_requested" and event["team_id"] is None:
+            approved = False
+    return approved
 
 
 def request_origin(remote: dict, previous: dict, account: GitHubAccount, team_cache: dict) -> dict:
@@ -173,12 +195,14 @@ def request_origin(remote: dict, previous: dict, account: GitHubAccount, team_ca
         # A new request restores a withdrawn row. Recheck history on its next
         # disappearance, even if GitHub's updated_at has not advanced yet.
         result.update(request_kind="direct", requested=True, request_withdrawn=False,
-                      request_history_updated_at=None)
+                      request_history_updated_at=None, approved=False)
         return result
 
     history = previous.get("request_history")
     history_ok = True
     if (history is None or not previous.get("request_history_updated_at")
+            # Older caches did not record review states.
+            or any(event["event"] == "reviewed" and "state" not in event for event in history)
             or previous["request_history_updated_at"] != remote["updated_at"]
             or set(previous.get("requested_team_ids", [])) != set(remote.get("requested_team_ids", []))):
         try:
@@ -190,6 +214,7 @@ def request_origin(remote: dict, previous: dict, account: GitHubAccount, team_ca
             result["request_kind_error"] = f"Could not check request history: {error}"
 
     history = history or []
+    result["approved"] = approved_by_account(history) if history_ok else previous.get("approved", False)
     current_teams = set(remote.get("requested_team_ids", []))
     candidate_teams = {event["team_id"] for event in history if event["team_id"] is not None} | current_teams
     membership_ok = True
@@ -220,7 +245,11 @@ def request_origin(remote: dict, previous: dict, account: GitHubAccount, team_ca
     if result.get("requested"):
         result["request_withdrawn"] = False
     elif history_ok and membership_ok:
-        result["request_withdrawn"] = bool(relevant and relevant[-1]["event"] == "review_request_removed")
+        # Team requests are often removed when another member reviews or the
+        # author prunes CODEOWNERS teams; only a removed direct request hides a PR.
+        activity = [event for event in relevant
+                    if event["team_id"] is None or event["event"] == "review_requested"]
+        result["request_withdrawn"] = bool(activity and activity[-1]["event"] == "review_request_removed")
     return result
 
 
@@ -349,17 +378,27 @@ class ReviewQueue:
                     with gh.account_auth(configured["hostname"], configured["login"], expected=expected) as account:
                         team_cache = {}
                         self._attach_sessions(account)
-                        requests = search_requests(account.login)
-                        requested = {}
-                        for result in requests:
-                            repo, number = gh.parse_pr_spec(result["html_url"])
-                            if gh.hostname_for_spec(result["html_url"]) != account.hostname:
-                                raise ValueError("review search returned a different GitHub host")
-                            requested[identity_key(account, repo, number)] = (repo, number)
+                        def discovered(results: list[dict]) -> dict:
+                            found = {}
+                            for result in results:
+                                repo, number = gh.parse_pr_spec(result["html_url"])
+                                if gh.hostname_for_spec(result["html_url"]) != account.hostname:
+                                    raise ValueError("review search returned a different GitHub host")
+                                found[identity_key(account, repo, number)] = (repo, number)
+                            return found
+
+                        requested = discovered(search_requests(account.login))
+                        # Extra searches track PRs without implying a pending request,
+                        # e.g. team requests GitHub drops once another member reviews.
+                        followed = {}
+                        for terms in configured.get("extraSearches", []):
+                            followed.update(discovered(search_prs(terms)))
                         with self.lock:
-                            for key, (repo, number) in requested.items():
+                            for key, (repo, number) in {**followed, **requested}.items():
                                 self.state["items"].setdefault(key, {"key": key, "account": asdict(account), "repo": repo, "number": number})
                             tracked = [copy.deepcopy(item) for item in self.state["items"].values() if item["account"] == asdict(account)]
+                        # A full poll can take minutes; fetch newly discovered PRs first.
+                        tracked.sort(key=lambda item: "checked_at" in item)
                         for old in tracked:
                             if self.stopping.is_set():
                                 return

@@ -21,6 +21,17 @@
   });
   applyTheme();
 
+  const HIDE_KEY = "pr.queue.hide";
+  const toggles = { approved: byId("queue-hide-approved"), drafts: byId("queue-hide-drafts"), stale: byId("queue-hide-stale") };
+  try {
+    const saved = JSON.parse(localStorage.getItem(HIDE_KEY) || "{}");
+    for (const [name, box] of Object.entries(toggles)) box.checked = saved[name] === true;
+  } catch { /* optional */ }
+  function saveToggles() {
+    const prefs = Object.fromEntries(Object.entries(toggles).map(([name, box]) => [name, box.checked]));
+    try { localStorage.setItem(HIDE_KEY, JSON.stringify(prefs)); } catch { /* optional */ }
+  }
+
   function node(tag, text, className = "") {
     const element = document.createElement(tag);
     if (text != null) element.textContent = text;
@@ -57,6 +68,9 @@
     const requestType = byId("queue-request-type").value;
     if (requestType && requestType !== item.request_kind) return false;
     if (query && !`${item.repo} ${item.number} ${item.title || ""} ${item.author || ""}`.toLowerCase().includes(query)) return false;
+    if (toggles.approved.checked && item.approved) return false;
+    if (toggles.drafts.checked && item.draft) return false;
+    if (toggles.stale.checked && item.freshness === "stale") return false;
     const filter = byId("queue-filter").value;
     if (filter !== "all" && item.state && item.state !== "open") return false;
     if (filter === "requested") return item.requested;
@@ -99,6 +113,7 @@
       identity.append(node("div", account?.label || item.account.login), node("div", requestLabel, "sub"));
       if (item.requested) identity.append(node("div", "Review requested", "sub"));
       else if (item.request_kind) identity.append(node("div", "No pending request", "sub"));
+      if (item.approved) identity.append(node("div", "Approved by you", "sub"));
       if (item.request_kind_error) identity.append(node("div", item.request_kind_error, "queue-detail error"));
       const review = node("td");
       const progress = item.session_progress?.status || "pending";
@@ -116,7 +131,7 @@
         open.href = `${base}/${encodeURIComponent(item.session_id)}`;
         actions.append(open);
       }
-      if (item.state === "open") {
+      if (!item.state || item.state === "open") {
         const copy = node("button", item.session_id ? "Copy re-review task" : "Copy review task");
         copy.type = "button";
         copy.disabled = !item.driver_task;
@@ -161,6 +176,7 @@
   byId("queue-account").addEventListener("change", render);
   byId("queue-request-type").addEventListener("change", render);
   byId("queue-filter").addEventListener("change", render);
+  for (const box of Object.values(toggles)) box.addEventListener("change", () => { saveToggles(); render(); });
   if (window.PR_QUEUE_ENABLED) {
     refresh();
     setInterval(refresh, 3000);
