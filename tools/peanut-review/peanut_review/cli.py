@@ -1060,10 +1060,11 @@ def cmd_gh_pull(args: argparse.Namespace) -> int:
 
 
 def cmd_gh_push_verdict(args: argparse.Namespace) -> int:
-    """Submit `result.json` as a GitHub PR review (verdict).
+    """Submit `result.json` as a GitHub COMMENT review.
 
-    Maps decision: approve → APPROVE, request-changes → REQUEST_CHANGES.
-    Refuses if no result.json exists or the verdict has already been
+    Every local decision is published as COMMENT, so peanut-review never
+    approves or requests changes on a PR. The local decision stays in
+    result.json. Refuses if no result.json exists or the verdict has already been
     submitted (Verdict.external_review_id set) unless --force is passed.
     """
     from . import gh
@@ -1086,17 +1087,12 @@ def cmd_gh_push_verdict(args: argparse.Namespace) -> int:
               f"Use --force to re-submit.", file=sys.stderr)
         return 1
 
-    event_map = {
-        "approve": "APPROVE",
-        "request-changes": "REQUEST_CHANGES",
-        "comment": "COMMENT",
-    }
-    event = event_map.get(v.decision)
-    if event is None:
+    if v.decision not in {"approve", "request-changes", "comment"}:
         print(f"Error: unknown verdict decision {v.decision!r} "
               f"(expected approve, request-changes, or comment)",
               file=sys.stderr)
         return 1
+    event = "COMMENT"
 
     if args.dry_run:
         try:
@@ -1905,7 +1901,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # gh-push-verdict
     sp = sub.add_parser("gh-push-verdict",
-                        help="Submit result.json as a GitHub PR review (approve/request-changes)")
+                        help="Submit result.json as a GitHub COMMENT review (never approves or blocks)")
     sp.add_argument("--dry-run", action="store_true",
                     help="Print the planned event without submitting")
     sp.add_argument("--force", action="store_true",

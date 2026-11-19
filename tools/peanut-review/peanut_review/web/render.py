@@ -1465,6 +1465,7 @@ def render_page(
                 title="Close">×</button>
       </div>
       <div class="modal-body" id="gh-push-body">Loading…</div>
+      <p class="gh-push-note">Posts a comment review. It never approves the PR or requests changes.</p>
       <div class="modal-footer">
         <button id="gh-push-cancel" type="button" data-modal-close>Cancel</button>
         <button id="gh-push-confirm" type="button" class="primary" disabled>

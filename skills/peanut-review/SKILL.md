@@ -403,8 +403,9 @@ files and follow the references' handling rules. SSH reviewers omit local paths.
 
 Use this for PR numbers, PR URLs, or external author changes. Import GitHub
 context, run reviewers, curate findings, and prepare a push-ready preview.
-Publish comments or an approve/request-changes decision only when the user
-explicitly asks.
+Publish comments only when the user explicitly asks. Publishing always submits
+a GitHub `COMMENT` review: peanut-review never approves a PR or requests
+changes, whatever the local category.
 
 1. Select the PR's branch-backed development worktree described above and run
    from inside it. Verify that its committed `HEAD` is the intended snapshot;
@@ -458,8 +459,8 @@ explicitly asks.
    "$PR_BIN" --session "$SESSION" add-global-comment --author Orchestrator --category approve --body "Configured review and curation completed with no actionable findings."
    ```
 
-   For self-owned PRs, GitHub may reject approve/request-changes events; use
-   `--category comment` for the same outcome summary in that case.
+   The category is a local label. `gh-push` publishes the summary as a
+   `COMMENT` review in every case, so it never blocks or approves the PR.
 
 7. Preview the review payload:
 

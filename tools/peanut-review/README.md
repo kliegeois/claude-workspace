@@ -389,7 +389,9 @@ substantive findings are addressed and the completed review of the current
 head finds no new substantive issues. Useful naming and organization feedback
 can be substantive; optional polish can remain alongside approval. The curator
 checks imported and historical findings and previews with `gh-push --dry-run`.
-Approvals stay local for the human user to publish through the web UI or CLI.
+Approvals stay local. Publishing through the web UI or CLI always submits a
+GitHub `COMMENT` review, so peanut-review never approves a PR or requests
+changes on it; the human reviewer decides that on GitHub.
 
 `wait-all round-done --max-reviewer-failures N` tolerates up to N reviewers
 finishing without a `round-done` signal. It waits for every reviewer to finish
@@ -552,7 +554,8 @@ blockquote before the response.
 
 Comments describe impact and uncertainty in prose; severity fields, filters,
 CLI flags and web badges have been retired. Review categories (`comment`,
-`approve`, `request-changes`) still control GitHub review decisions. Existing
+`approve`, `request-changes`) are local labels only: `gh-push` and
+`gh-push-verdict` publish every review as a GitHub `COMMENT`. Existing
 sessions remain readable. Reads leave stored JSONL untouched; the first rewrite
 of a legacy comment file saves its original bytes in a sibling
 `<author>.jsonl.pre-severity-removal` backup before dropping severity metadata,
