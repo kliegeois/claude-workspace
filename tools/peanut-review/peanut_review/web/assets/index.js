@@ -115,9 +115,133 @@
         <td class="mono workspace">${esc(s.workspace)}</td>
         <td class="counts">${countsCell(s)}</td>
         <td class="mono updated">${updatedCell(s.updated_at)}</td>
+        <td class="session-actions"><button type="button" class="session-delete" data-id="${attrEsc(s.id)}">Delete</button></td>
       </tr>
     `;
   }
+
+  function formatBytes(bytes) {
+    if (typeof bytes !== "number") return "";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+    return `${value.toFixed(unit && value < 10 ? 1 : 0)} ${units[unit]}`;
+  }
+
+  const deleteDialog = document.getElementById("delete-dialog");
+  const deleteBody = document.getElementById("delete-body");
+  const deleteError = document.getElementById("delete-error");
+  const deleteConfirm = document.getElementById("delete-confirm");
+  let deleteTarget = null;
+  let deletePlan = null;
+  let deleteBusy = false;
+
+  function showDeleteError(message) {
+    deleteError.textContent = message || "";
+    deleteError.hidden = !message;
+  }
+
+  function renderDeletePlan(plan) {
+    deletePlan = plan;
+    const s = plan.session;
+    const w = plan.worktree;
+    const size = formatBytes(s.size_bytes);
+    let html = `<p>This permanently deletes <strong>${esc(s.id)}</strong>: its comments, notes, logs and builds.</p>`;
+    html += `<p class="mono sub">${esc(s.path)}${size ? ` · ${esc(size)}` : ""}</p>`;
+    if (s.github && s.unpublished_count) {
+      html += `<p class="warn">${s.unpublished_count} comment(s) were never pushed to GitHub and will be lost.</p>`;
+    } else if (!s.github && s.comment_count) {
+      html += `<p class="warn">${s.comment_count} local review comment(s) will be lost.</p>`;
+    }
+    if (plan.blockers.length) {
+      html += `<p class="error">This session cannot be deleted right now:</p><ul class="error">`
+        + plan.blockers.map((b) => `<li>${esc(b)}</li>`).join("") + "</ul>";
+    }
+    const wtSize = formatBytes(w.size_bytes);
+    html += `<label class="delete-worktree"><input id="delete-worktree" type="checkbox"${w.removable && plan.deletable ? "" : " disabled"}>`
+      + ` Also remove the worktree <span class="mono">${esc(w.path)}</span>${wtSize ? ` · ${esc(wtSize)}` : ""}</label>`;
+    if (!w.removable) html += `<p class="sub">Not available: ${esc(w.reason)}</p>`;
+    for (const note of w.notes || []) html += `<p class="sub">${esc(note)}</p>`;
+    if (w.removable && w.untracked.length) {
+      const shown = w.untracked.slice(0, 20);
+      html += `<div class="delete-untracked" hidden><p class="sub">These untracked files are deleted with the worktree:</p><ul class="mono sub">`
+        + shown.map((p) => `<li>${esc(p)}</li>`).join("")
+        + (w.untracked.length > shown.length ? `<li>… and ${w.untracked.length - shown.length} more</li>` : "")
+        + "</ul></div>";
+    }
+    deleteBody.innerHTML = html;
+    const box = document.getElementById("delete-worktree");
+    const untracked = deleteBody.querySelector(".delete-untracked");
+    const sync = () => {
+      deleteConfirm.textContent = box.checked ? "Delete session and worktree" : "Delete session";
+      if (untracked) untracked.hidden = !box.checked;
+    };
+    box.addEventListener("change", sync);
+    sync();
+    deleteConfirm.disabled = !plan.deletable;
+  }
+
+  async function openDeleteDialog(id) {
+    deleteTarget = id;
+    deletePlan = null;
+    showDeleteError("");
+    deleteConfirm.disabled = true;
+    deleteConfirm.textContent = "Delete session";
+    deleteBody.innerHTML = `<p>Checking whether <strong>${esc(id)}</strong> can be deleted…</p>`;
+    deleteDialog.showModal();
+    try {
+      const r = await fetch(`${BASE}/${encodeURIComponent(id)}/api/session/delete-plan`, { cache: "no-store" });
+      const data = await r.json();
+      if (deleteTarget !== id) return;
+      if (!r.ok) throw new Error(data.error || `Check failed (${r.status})`);
+      renderDeletePlan(data);
+    } catch (err) {
+      if (deleteTarget === id) showDeleteError(err.message);
+    }
+  }
+
+  async function confirmDelete() {
+    if (!deletePlan || deleteBusy) return;
+    const box = document.getElementById("delete-worktree");
+    const removeWorktree = Boolean(box && box.checked);
+    deleteBusy = true;
+    deleteConfirm.disabled = true;
+    deleteConfirm.textContent = "Deleting…";
+    showDeleteError("");
+    try {
+      const r = await fetch(`${BASE}/${encodeURIComponent(deleteTarget)}/api/session/delete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Peanut-Queue-Token": window.PR_ACTION_TOKEN || "" },
+        body: JSON.stringify({
+          remove_worktree: removeWorktree,
+          confirmed_untracked: removeWorktree ? deletePlan.worktree.untracked : [],
+        }),
+      });
+      const data = await r.json();
+      if (r.status === 409 && data.plan) {
+        renderDeletePlan(data.plan);
+        throw new Error(data.error);
+      }
+      if (!r.ok) throw new Error(data.error || `Delete failed (${r.status})`);
+      deleteDialog.close();
+      await refresh();
+    } catch (err) {
+      showDeleteError(err.message);
+      if (deletePlan) deleteConfirm.disabled = !deletePlan.deletable;
+    } finally {
+      deleteBusy = false;
+    }
+  }
+
+  document.getElementById("session-rows")?.addEventListener("click", (event) => {
+    const button = event.target.closest(".session-delete");
+    if (button) openDeleteDialog(button.dataset.id);
+  });
+  document.getElementById("delete-cancel")?.addEventListener("click", () => { if (!deleteBusy) deleteDialog.close(); });
+  deleteConfirm?.addEventListener("click", confirmDelete);
+  deleteDialog?.addEventListener("cancel", (event) => { if (deleteBusy) event.preventDefault(); });
+  deleteDialog?.addEventListener("close", () => { deleteTarget = null; });
 
   const PAGE_SIZE = 50;
   const pageEtags = new Map();

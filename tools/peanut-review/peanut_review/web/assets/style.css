@@ -1414,3 +1414,18 @@ table.queue-table th { position: static; }
 #queue-task-dialog { width: min(760px, 90vw); border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--fg); }
 #queue-task-dialog::backdrop { background: #0008; }
 #queue-task-text { box-sizing: border-box; width: 100%; margin-bottom: 12px; background: var(--bg); color: var(--fg); border: 1px solid var(--border); padding: 10px; }
+
+/* Session deletion */
+table.sessions td.session-actions { text-align: right; white-space: nowrap; }
+.session-delete, .delete-dialog button { padding: 4px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--fg); font: inherit; font-size: 12px; cursor: pointer; }
+.session-delete:hover, .delete-dialog button.danger:not(:disabled):hover { color: var(--on-danger); border-color: var(--critical); background: var(--critical); }
+.delete-dialog { width: min(680px, 92vw); border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--fg); font-size: 13px; }
+.delete-dialog::backdrop { background: #0008; }
+.delete-dialog h2 { margin-top: 0; font-size: 16px; }
+.delete-dialog .sub { color: var(--muted); margin: 4px 0; overflow-wrap: anywhere; }
+.delete-dialog .error { color: var(--critical); }
+.delete-dialog ul { margin: 4px 0 8px; padding-left: 20px; }
+.delete-dialog .delete-worktree { display: flex; gap: 6px; align-items: baseline; margin-top: 12px; overflow-wrap: anywhere; }
+.delete-dialog .delete-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.delete-dialog button.danger { border-color: var(--critical); color: var(--critical); }
+.delete-dialog button:disabled { opacity: 0.5; cursor: default; }

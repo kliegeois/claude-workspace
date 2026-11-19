@@ -101,6 +101,11 @@ def review_repo_path(session: Session) -> str:
     return session.git_common_dir or repo_path(session)
 
 
+def review_git_namespace(session: Session) -> str:
+    """Name the `refs/peanut-review/<namespace>/` refs that retain this session's commits."""
+    return hashlib.sha256(f"{session.id}\0{session.created_at}".encode()).hexdigest()[:32]
+
+
 def retain_review_git(session: Session, repository: str | None = None) -> bool:
     """Keep reviewed commits reachable after a linked worktree is removed.
 
@@ -117,9 +122,7 @@ def retain_review_git(session: Session, repository: str | None = None) -> bool:
         for ref in (session.base_ref, session.topic_ref, session.current_head, session.original_head)
         if ref
     }
-    namespace = hashlib.sha256(
-        f"{session.id}\0{session.created_at}".encode()
-    ).hexdigest()[:32]
+    namespace = review_git_namespace(session)
     for commit in sorted(commits):
         _run_git(common_dir, "update-ref", f"refs/peanut-review/{namespace}/{commit}", commit)
     changed = session.git_common_dir != common_dir

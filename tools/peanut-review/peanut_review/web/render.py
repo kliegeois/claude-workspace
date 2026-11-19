@@ -1229,6 +1229,8 @@ def _render_session_row(s: dict, base_url: str = "") -> str:
         f'<td class="mono workspace">{workspace}</td>'
         f'<td class="counts">{counts}</td>'
         f'<td class="mono updated">{updated}</td>'
+        f'<td class="session-actions"><button type="button" class="session-delete" '
+        f'data-id="{sid}">Delete</button></td>'
         f'</tr>'
     )
 
@@ -1240,6 +1242,7 @@ def render_index(
     base_url: str = "",
     total_sessions: int | None = None,
     has_more: bool = False,
+    action_token: str = "",
 ) -> str:
     """Session-picker page served at `/`.
 
@@ -1256,7 +1259,7 @@ def render_index(
         f'<table class="sessions"{"" if sessions else " hidden"}>'
         '<thead><tr>'
         '<th>Session</th><th>Progress</th><th>Change</th>'
-        '<th>Workspace</th><th>Comments</th><th>Updated</th>'
+        '<th>Workspace</th><th>Comments</th><th>Updated</th><th></th>'
         '</tr></thead>'
         f'<tbody id="session-rows">{rows}</tbody>'
         '</table>'
@@ -1295,8 +1298,18 @@ def render_index(
   <main class="index-main">
     {body}
   </main>
+  <dialog id="delete-dialog" class="delete-dialog" aria-labelledby="delete-title">
+    <h2 id="delete-title">Delete session</h2>
+    <div id="delete-body" aria-live="polite"></div>
+    <p id="delete-error" class="error" role="alert" hidden></p>
+    <div class="delete-actions">
+      <button id="delete-cancel" type="button">Cancel</button>
+      <button id="delete-confirm" type="button" class="danger" disabled>Delete</button>
+    </div>
+  </dialog>
   <script>
     window.PR_BASE_URL = {base_url_js};
+    window.PR_ACTION_TOKEN = {json.dumps(action_token)};
   </script>
   <script src="{script_url}"></script>
 </body>

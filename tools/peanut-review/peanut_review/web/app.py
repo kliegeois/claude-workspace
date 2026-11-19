@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .. import agent_control, gh, gh_pull, gh_push, launch, runtime, store
+from .. import agent_control, gh, gh_pull, gh_push, launch, runtime, session_delete, store
 from ..models import Comment, CommentCategory, Note, Session, normalize_comment_category
 from ..session import (
     GLOBAL_FILE,
@@ -488,6 +488,7 @@ class _Handler(BaseHTTPRequestHandler):
                 base_url=self.base_url,
                 total_sessions=page["total"],
                 has_more=page["has_more"],
+                action_token=self.queue_token,
             ))
             return
         if url.path == "/api/sessions":
@@ -522,6 +523,14 @@ class _Handler(BaseHTTPRequestHandler):
         if session_dir is None:
             self._error(404, f"unknown session: {session_id}")
             return
+
+        if tail == "/api/session/delete-plan":
+            try:
+                plan = session_delete.deletion_plan(session_dir, self.registry.roots)
+            except (OSError, ValueError, RuntimeError) as exc:
+                return self._error(409, str(exc))
+            plan["worktree"].pop("common_dir", None)
+            return self._json(200, plan)
 
         if tail in ("/", ""):
             session = load_session(session_dir)
@@ -686,6 +695,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._error(400, "invalid JSON body")
             return
 
+        if tail == "/api/session/delete":
+            self._post_session_delete(session_dir, data)
+            return
         if tail == "/api/comments":
             self._post_comment(session_dir, data)
             return
@@ -1097,14 +1109,43 @@ class _Handler(BaseHTTPRequestHandler):
             "summary": r.summary(),
         })
 
+    def _dashboard_action(self, reload_hint: str) -> bool:
+        """Require the page token and same origin for actions another site must not trigger."""
+        if not secrets.compare_digest(self.headers.get("X-Peanut-Queue-Token", ""), self.queue_token):
+            self._error(403, reload_hint)
+            return False
+        origin = self.headers.get("Origin")
+        if origin and urlparse(origin).netloc != self.headers.get("Host"):
+            self._error(403, "Actions must come from this dashboard")
+            return False
+        return True
+
+    def _post_session_delete(self, session_dir: Path, data: dict) -> None:
+        if not self._dashboard_action("Reload the sessions page before deleting a session"):
+            return
+        remove_worktree = data.get("remove_worktree", False)
+        untracked = data.get("confirmed_untracked", [])
+        if type(remove_worktree) is not bool or not isinstance(untracked, list) or any(
+                not isinstance(path, str) for path in untracked):
+            return self._error(400, "invalid delete request")
+        try:
+            result = session_delete.delete_session(
+                session_dir, self.registry.roots,
+                remove_worktree=remove_worktree, confirmed_untracked=untracked)
+        except session_delete.DeletionBlocked as exc:
+            exc.plan["worktree"].pop("common_dir", None)
+            return self._json(409, {"error": str(exc), "plan": exc.plan})
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            return self._error(500, f"Delete failed: {exc}")
+        finally:
+            self.registry.rescan(force=True)
+        self._json(200, result)
+
     def _post_queue(self, path: str) -> None:
         if self.queue is None:
             return self._error(503, "Review queue is not configured")
-        if not secrets.compare_digest(self.headers.get("X-Peanut-Queue-Token", ""), self.queue_token):
-            return self._error(403, "Reload the review queue before submitting an action")
-        origin = self.headers.get("Origin")
-        if origin and urlparse(origin).netloc != self.headers.get("Host"):
-            return self._error(403, "Queue actions must come from this dashboard")
+        if not self._dashboard_action("Reload the review queue before submitting an action"):
+            return
         try:
             length = int(self.headers.get("Content-Length", "0"))
             if length < 0 or length > 8192:

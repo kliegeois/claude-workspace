@@ -622,6 +622,23 @@ cleanup skill deletes eligible session data by default while retaining reviewed
 Git commits; archives require an explicit request. Existing keep instructions and
 archives are unaffected by changing this policy.
 
+### Deleting a session from the dashboard
+
+Each row on the sessions page has a **Delete** button. The dialog shows the
+session directory and its size, comments that were never pushed to GitHub, and
+whether the session's worktree can be removed too. Deletion is permanent: it
+removes the session directory and the `refs/peanut-review/` refs that retained
+its reviewed commits.
+
+The same evidence as `cleanup-status` is rechecked on the server before
+anything is removed. Deletion is refused while the session's agents run, finished
+less than two minutes ago, or cannot be confirmed stopped. **Also remove the
+worktree** is offered only for an idle linked worktree that no other session
+uses and whose tracked files are clean. Its untracked files (for example runner
+config and build logs) are listed and must be confirmed. Removal uses
+`git worktree remove` and keeps the branch, reporting commits not pushed to its
+upstream. Main clones are never removed. Requests require the page's token.
+
 ## Review queue
 
 The **Review queue** tab discovers open PRs requested from each configured
