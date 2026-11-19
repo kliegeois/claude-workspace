@@ -15,6 +15,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -201,6 +202,13 @@ def approved_by_account(history: list[dict]) -> bool:
         elif event["event"] == "review_requested" and event["team_id"] is None:
             approved = False
     return approved
+
+
+def rate_limits() -> dict:
+    """Current REST and search budgets; querying them costs no quota."""
+    resources = json.loads(gh._api("rate_limit"))["resources"]
+    return {name: {field: int(resources[name][field]) for field in ("used", "limit", "reset")}
+            for name in ("core", "search") if name in resources}
 
 
 def review_by_account(history: list[dict]) -> dict | None:
@@ -398,6 +406,21 @@ class ReviewQueue:
                     item.update(completed_snapshot=receipt["snapshot"],
                                 completed_at=receipt["completed_at"])
 
+    @contextmanager
+    def _recording_rate_limit(self, account_key: str):
+        """Record the account's API budget after each poll, including failed ones."""
+        try:
+            yield
+        finally:
+            if not self.stopping.is_set():
+                try:
+                    limits = rate_limits()
+                except Exception:
+                    limits = None
+                if limits:
+                    with self.lock:
+                        self.state["accounts"].setdefault(account_key, {})["rate_limit"] = limits
+
     def refresh(self) -> None:
         with self.lock:
             if self.refreshing:
@@ -412,7 +435,8 @@ class ReviewQueue:
                     with self.lock:
                         previous = self.state["accounts"].get(account_key, {}).get("identity")
                     expected = GitHubAccount(**previous) if previous else None
-                    with gh.account_auth(configured["hostname"], configured["login"], expected=expected) as account:
+                    with (gh.account_auth(configured["hostname"], configured["login"], expected=expected) as account,
+                          self._recording_rate_limit(account_key)):
                         team_cache = {}
                         self._attach_sessions(account)
                         listed_updated_at = {}

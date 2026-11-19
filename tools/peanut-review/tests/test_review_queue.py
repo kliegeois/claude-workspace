@@ -15,6 +15,7 @@ from peanut_review.web.app import SessionRegistry
 
 ACCOUNT = GitHubAccount("github.com", "alice", 10)
 OTHER = GitHubAccount("github.com", "bob", 20)
+RATE_LIMITS = review_queue.rate_limits
 
 
 def remote(**updates):
@@ -35,6 +36,11 @@ def config(tmp_path):
         "cloneRoot": str(tmp_path / "clones"), "worktreeRoot": str(tmp_path / "worktrees"),
         "reviewConfig": str(tmp_path / "review.json"), "repositories": {},
     }]}
+
+
+@pytest.fixture(autouse=True)
+def no_rate_limit_lookup(monkeypatch):
+    monkeypatch.setattr(review_queue, "rate_limits", lambda: {})
 
 
 @pytest.fixture
@@ -143,6 +149,27 @@ def test_prs_reported_unchanged_by_search_are_not_refetched(queue, monkeypatch):
     queue.refresh()
     queue.refresh()
     assert len(fetched) == 4
+
+
+def test_rate_limit_is_recorded_after_successful_and_failed_polls(queue, monkeypatch):
+    budget = {"resources": {"core": {"used": 12, "limit": 5000, "reset": 1700000000, "remaining": 4988},
+                            "search": {"used": 3, "limit": 30, "reset": 1700000060}, "graphql": {}}}
+    monkeypatch.setattr(gh, "_api", lambda endpoint, **kwargs: json.dumps(budget))
+    assert RATE_LIMITS() == {"core": {"used": 12, "limit": 5000, "reset": 1700000000},
+                                          "search": {"used": 3, "limit": 30, "reset": 1700000060}}
+    monkeypatch.setattr(review_queue, "rate_limits", lambda: {"core": {"used": 7, "limit": 5000, "reset": 1}})
+    monkeypatch.setattr(gh, "account_auth", authenticate)
+    monkeypatch.setattr(review_queue, "search_requests", lambda login: [])
+    queue.refresh()
+    account = queue.payload()["accounts"][0]
+    assert account["rate_limit"]["core"]["used"] == 7 and not account["error"]
+    def fail(login):
+        raise RuntimeError("API rate limit exceeded")
+    monkeypatch.setattr(review_queue, "search_requests", fail)
+    monkeypatch.setattr(review_queue, "rate_limits", lambda: {"core": {"used": 5000, "limit": 5000, "reset": 2}})
+    queue.refresh()
+    account = queue.payload()["accounts"][0]
+    assert account["rate_limit"]["core"]["used"] == 5000 and "rate limit" in account["error"]
 
 
 def add_key(account=ACCOUNT, repo="acme/widget", number=1):

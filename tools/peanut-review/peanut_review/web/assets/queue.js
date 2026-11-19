@@ -163,6 +163,15 @@
       const card = node("div", null, `queue-account-card${account.error ? " account-error" : ""}`);
       card.append(node("strong", account.label), node("span", `@${account.login} · ${account.hostname}`, "meta"));
       card.append(node("span", account.error || (data.refreshing ? "Checking GitHub…" : relativeTime(account.checked_at)), account.error ? "error" : "meta"));
+      const core = account.rate_limit?.core;
+      if (core) {
+        const reset = new Date(core.reset * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        const budget = node("span", `GitHub API ${core.used}/${core.limit} · resets ${reset}`,
+          core.used >= core.limit * 0.8 ? "error" : "meta");
+        const search = account.rate_limit.search;
+        if (search) budget.title = `Search ${search.used}/${search.limit} per minute`;
+        card.append(budget);
+      }
       accounts.append(card);
     }
     byId("queue-account").value = selected;

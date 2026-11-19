@@ -876,6 +876,9 @@ A poll refetches a PR only when it is new, its last fetch failed, its search
 result shows a newer update, or its last full fetch is over 30 minutes old.
 Open PRs that no search lists any longer are refetched so closing is noticed.
 Refetches run four at a time, and progress is saved every 30 seconds.
+After each poll, the account card shows the GitHub API calls used this hour,
+the limit, and when it resets (it turns red above 80%); hover it for the
+per-minute search budget. Checking the budget does not count against it.
 
 **Copy review task** and **Copy re-review task** copy a task for your driver
 conversation. It includes the PR URL, selected GitHub account, review config,
