@@ -659,7 +659,8 @@ from the PR timeline; team requests must match a team of the selected account.
 Direct takes precedence when both apply. Tracked PRs without a known request
 origin show **No known request** and remain visible under **All request types**.
 The separate **Review requested** status filter still selects pending requests.
-**Hide PRs I approved**, **Hide drafts**, **Hide stale**, and the
+**Hide PRs I approved**, **Hide drafts**, **Hide stale**, **Hide my PRs**
+(on by default; hides PRs authored by the queue's account), and the
 **Repositories** selection are remembered in the browser; selecting no
 repository shows all of them. A PR
 counts as approved when your latest approving or change-requesting review is an

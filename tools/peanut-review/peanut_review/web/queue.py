@@ -42,7 +42,8 @@ def render_queue(base_url: str, token: str, enabled: bool) -> str:
 </select>
 <label class="queue-toggle"><input id="queue-hide-approved" type="checkbox"> Hide PRs I approved</label>
 <label class="queue-toggle"><input id="queue-hide-drafts" type="checkbox"> Hide drafts</label>
-<label class="queue-toggle"><input id="queue-hide-stale" type="checkbox"> Hide stale</label></div>
+<label class="queue-toggle"><input id="queue-hide-stale" type="checkbox"> Hide stale</label>
+<label class="queue-toggle"><input id="queue-hide-mine" type="checkbox" checked> Hide my PRs</label></div>
 <p id="queue-error" class="queue-notice error" role="alert" hidden></p>
 <p id="queue-copy-status" class="meta" role="status"></p>
 <div class="queue-table-wrap"><table class="sessions queue-table">

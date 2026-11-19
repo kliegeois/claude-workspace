@@ -22,10 +22,15 @@
   applyTheme();
 
   const HIDE_KEY = "pr.queue.hide";
-  const toggles = { approved: byId("queue-hide-approved"), drafts: byId("queue-hide-drafts"), stale: byId("queue-hide-stale") };
+  const toggles = {
+    approved: byId("queue-hide-approved"), drafts: byId("queue-hide-drafts"),
+    stale: byId("queue-hide-stale"), mine: byId("queue-hide-mine"),
+  };
   try {
     const saved = JSON.parse(localStorage.getItem(HIDE_KEY) || "{}");
-    for (const [name, box] of Object.entries(toggles)) box.checked = saved[name] === true;
+    for (const [name, box] of Object.entries(toggles)) {
+      if (typeof saved[name] === "boolean") box.checked = saved[name];
+    }
   } catch { /* optional */ }
   function saveToggles() {
     const prefs = Object.fromEntries(Object.entries(toggles).map(([name, box]) => [name, box.checked]));
@@ -112,6 +117,7 @@
     if (toggles.approved.checked && item.approved) return false;
     if (toggles.drafts.checked && item.draft) return false;
     if (toggles.stale.checked && item.freshness === "stale") return false;
+    if (toggles.mine.checked && item.author && item.author.toLowerCase() === item.account?.login?.toLowerCase()) return false;
     const filter = byId("queue-filter").value;
     if (filter !== "all" && item.state && item.state !== "open") return false;
     if (filter === "requested") return item.requested;
