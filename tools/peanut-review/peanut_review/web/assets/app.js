@@ -632,6 +632,7 @@
 
   document.addEventListener("mousedown", (ev) => {
     if (ev.button !== 0) return;  // left button only
+    if (window.PR_ROUND_VIEW) return;  // round diffs are read-only
     const info = lnInfo(ev.target);
     if (!info) return;
     ev.preventDefault();  // suppress text selection during drag
@@ -1481,7 +1482,9 @@
     });
     knownCommentIds = new Set(fetchedById.keys());
   }
-  startPoll(refreshComments, () => reviewTerminal ? 10000 : 3000);
+  if (!window.PR_ROUND_VIEW) {
+    startPoll(refreshComments, () => reviewTerminal ? 10000 : 3000);
+  }
 
   // --- Agent reports ---
   // Read-only notes for non-review output such as test execution and comment
@@ -1755,11 +1758,11 @@
   }
 
   async function saveAgentConfig() {
-    const updates = Array.from(agentConfigBody.querySelectorAll("input[data-agent]")).map((box) => ({
-      name: box.dataset.agent,
-      enabled: box.checked,
-      model: agentConfigBody.querySelector(`input[data-model="${CSS.escape(box.dataset.agent)}"]`).value.trim(),
-    }));
+    const updates = Array.from(agentConfigBody.querySelectorAll("input[data-agent]")).map((box) => {
+      const model = agentConfigBody.querySelector(`input[data-model="${CSS.escape(box.dataset.agent)}"]`).value.trim();
+      return model ? { name: box.dataset.agent, enabled: box.checked, model }
+        : { name: box.dataset.agent, enabled: box.checked };
+    });
     try {
       const res = await fetch(`${sessionUrl}/api/agents/config`, {
         method: "POST",
@@ -1778,6 +1781,53 @@
   }
 
   document.getElementById("agent-config-btn")?.addEventListener("click", openAgentConfig);
+
+  // --- Automatic local rounds ---
+  function loopSignature(loop) {
+    if (!loop) return "";
+    return JSON.stringify([loop.status, loop.running, loop.stop_requested,
+      (loop.rounds || []).map((r) => [r.status, r.head_after])]);
+  }
+  let loopSig = loopSignature(window.PR_LOOP);
+
+  function noteLoopChange(loop) {
+    const sig = loopSignature(loop);
+    if (sig === loopSig) return;
+    loopSig = sig;
+    if (document.querySelector(".new-comment, dialog[open]")) {
+      flashToast("Automatic rounds updated; reload to see the latest diff", 6000);
+    } else {
+      location.reload();
+    }
+  }
+
+  async function loopAction(path, body) {
+    const err = document.getElementById("rounds-error");
+    err.hidden = true;
+    try {
+      const res = await fetch(`${sessionUrl}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Peanut-Queue-Token": window.PR_ACTION_TOKEN || "" },
+        body: JSON.stringify(body || {}),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+      noteLoopChange(data.loop);
+    } catch (e) {
+      err.textContent = e.message;
+      err.hidden = false;
+    }
+  }
+
+  document.getElementById("rounds-start-btn")?.addEventListener("click", () => {
+    const rounds = parseInt(document.getElementById("rounds-count").value, 10);
+    loopAction("/api/loop/start", { rounds });
+  });
+  document.getElementById("rounds-stop-btn")?.addEventListener("click", (ev) => {
+    ev.target.disabled = true;
+    ev.target.textContent = "Stopping…";
+    loopAction("/api/loop/stop");
+  });
   document.getElementById("agent-config-cancel")?.addEventListener("click", () => agentConfigDialog.close());
   document.getElementById("agent-config-save")?.addEventListener("click", saveAgentConfig);
 
@@ -1819,6 +1869,7 @@
       set("stale_comments", s.stale_count);
       updatePushButton(s.pending_push);
       updateAgentList(s.agents || []);
+      if (!s.is_github) noteLoopChange(s.loop);
       const h = document.querySelector("header .badge.head");
       if (h && s.workspace_mismatch) {
         h.textContent = "workspace differs";

@@ -1432,6 +1432,31 @@ def cmd_cleanup_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_auto_rounds(args: argparse.Namespace) -> int:
+    """Run automatic review/edit rounds in the foreground."""
+    import signal
+    from . import auto_rounds
+    session_dir = _get_session_dir(args)
+    if args.status:
+        print(json.dumps(auto_rounds.loop_status(session_dir), indent=2))
+        return 0
+    if args.rounds is None:
+        print("Error: --rounds is required", file=sys.stderr)
+        return 1
+    signal.signal(signal.SIGTERM, auto_rounds.raise_stopped)
+    try:
+        state = auto_rounds.run(session_dir, args.rounds)
+    except (ValueError, RuntimeError, TimeoutError, OSError, subprocess.SubprocessError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    print(f"auto-rounds {state['status']}: {state['reason']}")
+    for record in state["rounds"]:
+        after = (record.get("head_after") or "")[:12] or "-"
+        print(f"  round {record['number']}: {record['status']} "
+              f"({record.get('open_findings')} open findings, commit {after})")
+    return 0
+
+
 def cmd_pr_state(args: argparse.Namespace) -> int:
     """Show whether the session's PR is open, closed, or merged."""
     from . import pr_state
@@ -2015,6 +2040,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("pr-state", help="Show whether the PR is merged and the session is safe to delete")
     sp.add_argument("--refresh", action="store_true", help="Fetch from GitHub even if recently checked")
 
+    sp = sub.add_parser(
+        "auto-rounds",
+        help="Run review, curate, and Editor rounds on a local session until it converges",
+    )
+    sp.add_argument("--rounds", type=int, default=None,
+                    help="Maximum review/edit rounds (1-10); required unless --status")
+    sp.add_argument("--status", action="store_true",
+                    help="Print the recorded round state instead of running")
+
     sp = sub.add_parser("recover-completion", help="Recover a signaled reviewer after supervisor loss")
     sp.add_argument("--agent", required=True, help="Reviewer with missing terminal bookkeeping")
     sp.add_argument("--dry-run", action="store_true", help="Validate evidence without changing records")
@@ -2126,6 +2160,7 @@ def main(argv: list[str] | None = None) -> int:
         "status": cmd_status,
         "recover-completion": cmd_recover_completion,
         "pr-state": cmd_pr_state,
+        "auto-rounds": cmd_auto_rounds,
         "cleanup-status": cmd_cleanup_status,
         "retain-git": cmd_retain_git,
         "archive": cmd_archive,

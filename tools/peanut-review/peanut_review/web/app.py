@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .. import agent_control, gh, gh_pull, gh_push, launch, pr_state, runtime, session_delete, store
+from .. import agent_control, auto_rounds, gh, gh_pull, gh_push, launch, pr_state, runtime, session_delete, store
 from ..models import Comment, CommentCategory, Note, Session, normalize_comment_category
 from ..session import (
     GLOBAL_FILE,
@@ -65,7 +65,8 @@ def _subdir_revision(session_dir: Path, subdir: str) -> str:
 
 
 def _session_revision(session_dir: Path, *, workspace_head: str = "") -> str:
-    paths = [session_dir / "session.json"]
+    paths = [session_dir / "session.json", session_dir / auto_rounds.LOOP_FILE,
+             session_dir / auto_rounds.STOP_FILE]
     for subdir in ("comments", "notes", "signals"):
         directory = session_dir / subdir
         if directory.is_dir():
@@ -602,10 +603,20 @@ class _Handler(BaseHTTPRequestHandler):
                 poll_etags["/api/notes"] = notes_after
             if session_before == session_after:
                 poll_etags["/api/session"] = session_after
-            try:
-                files = diffmod.parse_diff(
-                    review_repo_path(session), session.base_ref, session.topic_ref,
+            diff_base, diff_head = session.base_ref, session.topic_ref
+            active_round = None
+            round_param = parse_qs(url.query).get("round", [""])[0]
+            if round_param:
+                selected = (
+                    auto_rounds.round_range(session_dir, int(round_param))
+                    if round_param.isdigit() else None
                 )
+                if selected is None:
+                    return self._error(404, f"no committed round {round_param}")
+                diff_base, diff_head = selected
+                active_round = int(round_param)
+            try:
+                files = diffmod.parse_diff(review_repo_path(session), diff_base, diff_head)
             except RuntimeError as e:
                 self._error(409, f"cannot render pinned review diff: {e}")
                 return
@@ -623,6 +634,8 @@ class _Handler(BaseHTTPRequestHandler):
                 agent_runtime=agent_runtime,
                 poll_etags=poll_etags,
                 action_token=self.queue_token,
+                loop=auto_rounds.loop_status(session_dir),
+                active_round=active_round,
             )
             self._html(200, html_out)
             return
@@ -674,6 +687,8 @@ class _Handler(BaseHTTPRequestHandler):
                     gh_push.plan_push(comments).total
                     if session.github is not None else None
                 ),
+                "is_github": session.github is not None,
+                "loop": auto_rounds.loop_status(session_dir),
             }
             self._json(200, payload, etag=etag)
             return
@@ -733,6 +748,11 @@ class _Handler(BaseHTTPRequestHandler):
             if data is None:
                 return self._error(400, "invalid JSON body")
             return self._post_settings_agents(data)
+        if url.path == "/api/local/start":
+            data = self._read_json()
+            if data is None:
+                return self._error(400, "invalid JSON body")
+            return self._post_local_start(data)
         m = ROUTE_RE.match(url.path)
         if not m or m.group(1) in RESERVED_ROOTS:
             self._error(404, f"no route for {url.path}")
@@ -789,6 +809,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if tail == "/api/curator/launch":
             self._post_curator_launch(session_dir)
+            return
+        if tail == "/api/loop/start":
+            self._post_loop_start(session_dir, data)
+            return
+        if tail == "/api/loop/stop":
+            self._post_loop_stop(session_dir)
             return
         self._error(404, f"no route for {tail}")
 
@@ -1241,6 +1267,56 @@ class _Handler(BaseHTTPRequestHandler):
             return self._error(409, str(exc))
         session = load_session(session_dir)
         self._json(200, {"agents": _agent_payload(session_dir, session)})
+
+    @staticmethod
+    def _rounds(value) -> int:
+        if type(value) is not int or not 1 <= value <= auto_rounds.MAX_ROUNDS:
+            raise ValueError(f"rounds must be a whole number from 1 to {auto_rounds.MAX_ROUNDS}")
+        return value
+
+    def _post_local_start(self, data: dict) -> None:
+        if not self._dashboard_action("Reload the local reviews page before starting a review"):
+            return
+        from ..cli import _load_project_config
+        allowed = {str(p) for p in self._review_configs()}
+        config = data.get("config")
+        workspace, base = data.get("workspace"), data.get("base")
+        if config not in allowed:
+            return self._error(400, "unknown review config")
+        if not isinstance(workspace, str) or not workspace.strip():
+            return self._error(400, "enter the worktree path")
+        if not isinstance(base, str) or not base.strip():
+            return self._error(400, "enter the base commit")
+        try:
+            rounds = self._rounds(data.get("rounds"))
+            cfg, _path = _load_project_config(config)
+            agents = agent_settings.apply_updates(cfg["agents"], data.get("agents", []))
+            session_dir = auto_rounds.create_local_session(cfg, workspace.strip(), base.strip(), agents)
+        except (ValueError, RuntimeError, OSError) as exc:
+            return self._error(400, str(exc))
+        self.registry.rescan(force=True)
+        try:
+            auto_rounds.spawn_driver(session_dir, rounds)
+        except (ValueError, RuntimeError, OSError) as exc:
+            return self._json(409, {"error": f"session created, rounds not started: {exc}",
+                                    "session_id": load_session(session_dir).id})
+        self._json(201, {"session_id": load_session(session_dir).id, "session_dir": str(session_dir)})
+
+    def _post_loop_start(self, session_dir: Path, data: dict) -> None:
+        if not self._dashboard_action("Reload the session page before starting rounds"):
+            return
+        try:
+            auto_rounds.spawn_driver(session_dir, self._rounds(data.get("rounds")))
+        except (ValueError, RuntimeError, OSError) as exc:
+            return self._error(409, str(exc))
+        self._json(202, {"loop": auto_rounds.loop_status(session_dir)})
+
+    def _post_loop_stop(self, session_dir: Path) -> None:
+        if not self._dashboard_action("Reload the session page before stopping rounds"):
+            return
+        if not auto_rounds.request_stop(session_dir):
+            return self._error(409, "automatic rounds are not running")
+        self._json(202, {"loop": auto_rounds.loop_status(session_dir)})
 
     def _post_pr_state(self, session_dir: Path) -> None:
         if not self._dashboard_action("Reload the sessions page before checking the PR"):

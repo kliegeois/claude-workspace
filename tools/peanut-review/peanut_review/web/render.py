@@ -900,6 +900,7 @@ def _render_sidebar(
     files: list[FileDiff],
     notes: list[Note] | None = None,
     agent_runtime: dict[str, dict[str, str]] | None = None,
+    rounds_html: str = "",
 ) -> str:
     # Sidebar counters reflect what's visible (deleted hidden), with a
     # separate "deleted" row so the audit count is still discoverable.
@@ -1095,6 +1096,7 @@ def _render_sidebar(
         '</span>'
         '</div>'
         f'<ul id="agent-list" class="agent-list">{agent_rows or "<li>(none)</li>"}</ul>'
+        f'{rounds_html}'
         '<h3>Navigation</h3>'
         '<ul class="shortcuts">'
         '<li><span class="keys"><kbd>n</kbd><kbd>p</kbd></span>'
@@ -1283,10 +1285,11 @@ def _render_local_form(review_configs: list[str]) -> str:
         '<label>Base commit <input name="base" required placeholder="SHA the branch starts from" '
         'class="mono"></label>'
         f'<label>Review config <select name="config">{options}</select></label>'
-        '<label>Max edit rounds <input name="rounds" type="number" min="0" max="10" value="3"></label>'
-        '<p class="sub">Each round: reviewers, then the curator, then the Editor commits its fixes. '
-        'Rounds stop early when the curator leaves no unresolved comments or the Editor '
-        'makes no commit. 0 runs one review without edits. Nothing is pushed.</p>'
+        '<label>Max rounds <input name="rounds" type="number" min="1" max="10" value="3"></label>'
+        '<p class="sub">Each round runs the reviewers and the curator, then the Editor fixes or '
+        'rebuts what is left and its edits become one local commit on your branch. Rounds stop '
+        'early when the curator leaves no unresolved findings or the Editor changes nothing. '
+        'Your worktree must stay clean while rounds run. Nothing is pushed.</p>'
         '<fieldset id="local-new-agents"><legend>Agents</legend>'
         '<p class="sub">Loading agents…</p></fieldset>'
         '<p id="local-new-error" class="error" role="alert" hidden></p>'
@@ -1428,6 +1431,83 @@ def render_settings(base_url: str, action_token: str) -> str:
 """
 
 
+ROUND_STATUS_LABELS = {
+    "reviewing": "reviewers running",
+    "curating": "curator running",
+    "editing": "Editor running",
+    "converged": "converged: no open findings",
+    "no-changes": "Editor changed nothing",
+    "committed": "committed",
+    "not-applied": "commit not applied",
+}
+LOOP_STATUS_LABELS = {
+    "starting": "starting",
+    "running": "running",
+    "converged": "converged",
+    "done": "finished",
+    "blocked": "stopped: needs you",
+    "stopped": "stopped",
+    "failed": "failed",
+    "interrupted": "interrupted",
+}
+
+
+def _render_rounds_panel(base_url: str, session_id: str, loop: dict | None,
+                         active_round: int | None) -> str:
+    """Sidebar panel for automatic local rounds: status, controls, per-round diffs."""
+    session_href = html.escape(f"{base_url}/{session_id}", quote=True)
+    running = bool(loop and loop.get("running"))
+    rows = []
+    for record in (loop or {}).get("rounds", []):
+        number = int(record.get("number") or 0)
+        label = html.escape(ROUND_STATUS_LABELS.get(record.get("status"), record.get("status") or ""))
+        findings = record.get("open_findings")
+        detail = f" · {findings} open" if findings is not None else ""
+        failed = record.get("failed_reviewers") or []
+        if failed:
+            detail += f" · failed: {', '.join(failed)}"
+        if record.get("head_after"):
+            short = html.escape(record["head_after"][:10])
+            current = ' aria-current="page"' if active_round == number else ""
+            link = (f'<a href="{session_href}?round={number}"{current} '
+                    f'title="Diff of this round\'s Editor commit">{short}</a>')
+        else:
+            link = '<span class="sub">no commit</span>'
+        rows.append(
+            f'<li class="round-row" data-round="{number}">'
+            f'<span class="round-num">Round {number}</span> {link}'
+            f'<div class="sub">{label}{html.escape(detail)}</div></li>'
+        )
+    full_current = ' aria-current="page"' if not active_round else ""
+    if loop:
+        status = loop.get("status", "")
+        summary = (f'<p class="rounds-status rounds-{html.escape(status)}">'
+                   f'{html.escape(LOOP_STATUS_LABELS.get(status, status))}'
+                   f' · up to {int(loop.get("max_rounds") or 0)} rounds</p>')
+        if loop.get("reason"):
+            summary += f'<p class="sub">{html.escape(loop["reason"])}</p>'
+        if loop.get("editor_worktree") and not running:
+            summary += (f'<p class="sub">Editor checkout kept at '
+                        f'<span class="mono">{html.escape(loop["editor_worktree"])}</span></p>')
+    else:
+        summary = '<p class="sub">Not started. Each round runs the reviewers and the curator, then the Editor commits fixes.</p>'
+    controls = (
+        '<button id="rounds-stop-btn" type="button">Stop</button>' if running else
+        '<label class="rounds-start">Rounds <input id="rounds-count" type="number" min="1" '
+        'max="10" value="3"></label> <button id="rounds-start-btn" type="button">Run</button>'
+    )
+    return (
+        '<div class="rounds-panel" id="rounds-panel">'
+        '<h3>Automatic rounds</h3>'
+        f'{summary}'
+        f'<div class="rounds-controls">{controls}</div>'
+        '<p id="rounds-error" class="error" role="alert" hidden></p>'
+        f'<ul class="rounds-list"><li class="round-row"><a href="{session_href}"{full_current}>'
+        f'Full change</a></li>{"".join(rows)}</ul>'
+        '</div>'
+    )
+
+
 def render_page(
     session: Session,
     session_id: str,
@@ -1440,6 +1520,8 @@ def render_page(
     agent_runtime: dict[str, dict[str, str]] | None = None,
     poll_etags: dict[str, str] | None = None,
     action_token: str = "",
+    loop: dict | None = None,
+    active_round: int | None = None,
 ) -> str:
     """Build the full HTML page for a session.
 
@@ -1447,7 +1529,9 @@ def render_page(
     `notes` are non-review agent reports rendered at the bottom; None falls
     back to empty so tests/non-server callers do not have to pass them.
     """
-    threads_at = _group_threads_by_anchor(comments)
+    # A round view diffs one Editor commit; comment anchors belong to the full
+    # change, so inline threads are left out there.
+    threads_at = _group_threads_by_anchor([] if active_round else comments)
     note_items = notes or []
     file_parts: list[str] = []
     remaining_rows = MAX_INITIAL_PAGE_LINES
@@ -1469,7 +1553,18 @@ def render_page(
         session, comments, files,
         notes=note_items,
         agent_runtime=agent_runtime,
+        rounds_html=(
+            _render_rounds_panel(base_url, session_id, loop, active_round)
+            if session.github is None else ""
+        ),
     )
+    round_banner = ""
+    if active_round:
+        full_href = html.escape(f"{base_url}/{session_id}", quote=True)
+        round_banner = (
+            f'<div class="round-banner">Showing the Editor commit of round {active_round} only. '
+            f'Comments are shown on the <a href="{full_href}">full change</a>.</div>'
+        )
 
     head_badge = (
         '<span class="badge head head-shifted" '
@@ -1529,6 +1624,7 @@ def render_page(
     poll_etags_js = json.dumps(
         poll_etags or {}, separators=(",", ":"),
     ).replace("</", "<\\/")
+    loop_js = json.dumps(loop, separators=(",", ":")).replace("</", "<\\/")
 
     style_url = html.escape(_asset_url(base_url, "style.css"), quote=True)
     script_url = html.escape(_asset_url(base_url, "app.js"), quote=True)
@@ -1564,7 +1660,8 @@ def render_page(
   </header>
   <main>
     {sidebar}
-    {global_html}
+    {round_banner}
+    {"" if active_round else global_html}
     {file_html}
     {report_html}
   </main>
@@ -1604,6 +1701,8 @@ def render_page(
     window.PR_SESSION_ID = {session_id_js};
     window.PR_KNOWN_COMMENT_IDS = {known_comment_ids_js};
     window.PR_POLL_ETAGS = {poll_etags_js};
+    window.PR_ROUND_VIEW = {json.dumps(active_round)};
+    window.PR_LOOP = {loop_js};
   </script>
   <script src="{script_url}"></script>
 </body>

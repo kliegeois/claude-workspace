@@ -69,11 +69,11 @@
     const config = configs[Number(section.dataset.index)];
     const status = section.querySelector(".settings-status");
     const button = section.querySelector(".settings-save");
-    const agents = config.agents.map((a) => ({
-      name: a.name,
-      enabled: section.querySelector(`[data-enabled="${CSS.escape(a.name)}"]`).checked,
-      model: section.querySelector(`[data-model="${CSS.escape(a.name)}"]`).value.trim(),
-    }));
+    const agents = config.agents.map((a) => {
+      const enabled = section.querySelector(`[data-enabled="${CSS.escape(a.name)}"]`).checked;
+      const model = section.querySelector(`[data-model="${CSS.escape(a.name)}"]`).value.trim();
+      return model ? { name: a.name, enabled, model } : { name: a.name, enabled };
+    });
     const addEditor = Boolean(section.querySelector("[data-add-editor]")?.checked);
     button.disabled = true;
     status.textContent = "Saving…";

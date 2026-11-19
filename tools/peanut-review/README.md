@@ -505,6 +505,39 @@ COMMENT_ID=c_1234abcd
 "$PR_BIN" --session "$SESSION" verdict --approve --body "All critical issues addressed"
 ```
 
+### Automatic review/edit rounds
+
+A local session can run the loop above by itself. Add an agent with
+`"role": "editor"` (the Settings tab can add one), then either use **New local
+review** on the **Local reviews** tab or run:
+
+```bash
+"$PR_BIN" --session "$SESSION" auto-rounds --rounds 3
+"$PR_BIN" --session "$SESSION" auto-rounds --status
+```
+
+Each round runs the enabled reviewers, then the curator. If unresolved
+findings remain (curator approvals do not count), the Editor fixes or rebuts
+each one, replying on and resolving the threads it handled. It works in a
+detached checkout at `<session>/editor-worktree` that copies your sparse
+checkout and has its own `.cursor/cli.json` (from
+`templates/editor-cli.json`): it can edit files but is denied commits, pushes,
+history changes, deletes, and `gh`. The driver then commits its edits as one
+commit with your git identity, fast-forwards your checkout to it, and runs the
+equivalent of `migrate`.
+
+Rounds stop when the curator leaves no unresolved findings, when the Editor
+changes nothing, or after `--rounds` rounds (at most 10). They also stop,
+without moving your branch, if your checkout gained uncommitted changes or a
+new HEAD during the round; the commit is kept and the status shows the
+`git merge --ff-only` command to apply it. Nothing is pushed.
+
+The session page lists every round with a link to its commit's diff
+(`?round=N`), next to **Full change**, and has **Run** and **Stop** buttons.
+State is in `<session>/loop.json` and the driver log in
+`<session>/log/auto-rounds.log`. The Editor checkout is removed when the loop
+ends cleanly and kept for inspection when it fails.
+
 ## Flow: PR Updated
 
 Use this after the author pushes a new revision.

@@ -140,6 +140,11 @@ def _apply(agents: list[dict], updates: dict[str, dict]) -> list[dict]:
     return result
 
 
+def apply_updates(agents: list[dict], updates) -> list[dict]:
+    """Return a copy of a config's agents with enable/model changes applied."""
+    return _apply([dict(agent) for agent in agents], _validate_updates(updates))
+
+
 def _write_json(path: Path, data: dict) -> None:
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:

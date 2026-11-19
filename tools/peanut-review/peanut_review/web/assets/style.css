@@ -1469,3 +1469,22 @@ tr.safe-to-delete .session-delete { border-color: var(--success-border-strong); 
 }
 #agent-config-dialog { min-width: 560px; }
 #agent-config-body { margin: 10px 0; }
+.rounds-panel { margin: 4px 0 8px; }
+.rounds-panel p { margin: 2px 0; font-size: 12px; }
+.rounds-panel .sub { color: var(--muted); font-size: 11px; }
+.rounds-controls { display: flex; align-items: center; gap: 6px; margin: 6px 0; }
+.rounds-controls input { width: 48px; }
+.rounds-list { list-style: none; padding: 0; margin: 4px 0; }
+.round-row { padding: 2px 0; font-size: 12px; }
+.round-row a[aria-current="page"] { font-weight: 600; text-decoration: underline; }
+.round-num { color: var(--muted); margin-right: 4px; }
+.rounds-running, .rounds-starting { color: var(--accent); }
+.rounds-failed, .rounds-blocked, .rounds-interrupted { color: #d73a49; }
+.round-banner {
+  margin: 8px 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  font-size: 12px;
+}

@@ -396,7 +396,7 @@
       + `<input class="mono local-agent-model" list="local-model-options" data-model="${attrEsc(a.name)}" value="${attrEsc(a.model)}" aria-label="${attrEsc(a.name)} model">`
       + `</label>`).join("");
     const hasEditor = agents.some((a) => a.role === "editor");
-    const editorNote = hasEditor ? "" : `<p class="sub warn">No Editor agent in this config: rounds will review only. Add one in Settings to enable edits.</p>`;
+    const editorNote = hasEditor ? "" : `<p class="sub warn">No Editor agent in this config. Add one in Settings before starting a local review.</p>`;
     localAgents.innerHTML = `<legend>Agents</legend>${rows}${editorNote}<datalist id="local-model-options"></datalist>`;
     loadModelOptions(document.getElementById("local-model-options"));
   }
@@ -426,11 +426,11 @@
     event.preventDefault();
     showLocalError("");
     const submit = document.getElementById("local-new-submit");
-    const agents = Array.from(localAgents.querySelectorAll("input[data-agent]")).map((box) => ({
-      name: box.dataset.agent,
-      enabled: box.checked,
-      model: (localAgents.querySelector(`input[data-model="${CSS.escape(box.dataset.agent)}"]`) || {}).value || "",
-    }));
+    const agents = Array.from(localAgents.querySelectorAll("input[data-agent]")).map((box) => {
+      const model = ((localAgents.querySelector(`input[data-model="${CSS.escape(box.dataset.agent)}"]`) || {}).value || "").trim();
+      return model ? { name: box.dataset.agent, enabled: box.checked, model }
+        : { name: box.dataset.agent, enabled: box.checked };
+    });
     const body = {
       workspace: localForm.elements.workspace.value.trim(),
       base: localForm.elements.base.value.trim(),
@@ -447,7 +447,8 @@
         body: JSON.stringify(body),
       });
       const data = await r.json();
-      if (!r.ok) throw new Error(data.error || `Start failed (${r.status})`);
+      if (!r.ok && !data.session_id) throw new Error(data.error || `Start failed (${r.status})`);
+      if (!r.ok) alert(data.error);
       window.location.href = `${BASE}/${encodeURIComponent(data.session_id)}`;
     } catch (err) {
       showLocalError(err.message);
