@@ -126,6 +126,11 @@ you can instead forward its port through the editor's Ports panel. Set
 `PR_BASE_URL` only when a reverse proxy removes that same path prefix before
 forwarding requests.
 
+The dashboard has four tabs: **Review queue**, **PR reviews** (sessions for a
+GitHub PR, at `/`), **Local reviews** (sessions for a local branch, at `/local`),
+and **Settings** (agents and models, at `/settings`). `/api/sessions?kind=github`
+or `?kind=local` filters the session list the same way.
+
 ### Optional browser profiling
 
 The runtime has no browser dependency. For repeatable local performance
@@ -259,6 +264,22 @@ Agent configuration is copied into each new session. Editing the shared config
 affects new sessions; `launch`, `rerun`, and `curate` on existing sessions retain
 their saved agents.
 
+Set `"enabled": false` on an agent to keep it in the lineup without running it.
+Disabled agents are skipped by `launch`, `rerun`, completion, and progress, and
+naming one explicitly with `--agent` is an error. At least one reviewer must stay
+enabled, and the curator cannot be disabled. You can also change this from the
+web UI (on a localhost address only, because these settings start agents that
+write code):
+
+- The **Settings** tab edits `enabled` and `model` in the project config that
+  seeds new sessions. It finds configs from `serve --review-config PATH`, the
+  queue accounts' `reviewConfig`, and `.peanut-review.json` next to the session
+  root. Other keys in the file are kept as written. Model suggestions come from
+  `cursor-agent --list-models`; any model ID can be typed.
+- **configure** in a session's Agents panel changes that session only. It is
+  refused while one of the session's agents or its automatic rounds are
+  running.
+
 Cursor runners need permissions in the actual reviewed workspace before
 `launch`, including each new worktree. A `.cursor/cli.json` in the enclosing
 meta workspace does not satisfy the launch check. If the worktree has no config:
@@ -389,7 +410,9 @@ substantive findings are addressed and the completed review of the current
 head finds no new substantive issues. Useful naming and organization feedback
 can be substantive; optional polish can remain alongside approval. The curator
 checks imported and historical findings and previews with `gh-push --dry-run`.
-Approvals stay local for the human user to publish through the web UI or CLI.
+Approvals stay local. Publishing through the web UI or CLI always submits a
+GitHub `COMMENT` review, so peanut-review never approves a PR or requests
+changes on it; the human reviewer decides that on GitHub.
 
 `wait-all round-done --max-reviewer-failures N` tolerates up to N reviewers
 finishing without a `round-done` signal. It waits for every reviewer to finish
@@ -485,6 +508,50 @@ COMMENT_ID=c_1234abcd
 "$PR_BIN" --session "$SESSION" verdict --approve --body "All critical issues addressed"
 ```
 
+### Automatic review/edit rounds
+
+A local session can run the loop above by itself. Add an agent with
+`"role": "editor"` (the Settings tab can add one), then either use **New local
+review** on the **Local reviews** tab or run:
+
+```bash
+"$PR_BIN" --session "$SESSION" auto-rounds --rounds 3
+"$PR_BIN" --session "$SESSION" auto-rounds --status
+```
+
+Each round runs the enabled reviewers, then the curator. If unresolved
+findings remain (curator approvals do not count), the Editor fixes or rebuts
+each one, replying on and resolving the threads it handled. It works in a
+detached checkout at `<session>/editor-worktree` that copies your sparse
+checkout and has its own `.cursor/cli.json` (from
+`templates/editor-cli.json`). The Editor must use the `cursor` runner, which
+runs it without `--force`, so only allow-listed shell commands run. Its shell
+allow list holds only the peanut-review subcommands it needs for its own
+session (`status`, `comments`, `add-comment`, `resolve`, `note`, `signal
+round-done`); git, builds, tests, `bash -c`, pushes, and `gh` are rejected.
+It reads the change from a patch the driver writes into its scratch
+directory. Cursor's file tools are not confined by the permissions file or by
+`--sandbox`, so the Editor could in principle write outside its checkout; it
+is told not to, and this is still narrower than reviewers, which run with
+`--force`. The driver then commits its edits as one commit with your git
+identity (without hooks), keeps it reachable under `refs/peanut-review/`,
+fast-forwards your checkout to it, and runs the equivalent of `migrate`.
+
+Rounds stop when the curator leaves no unresolved findings, when the Editor
+changes nothing while findings are still open (reported as needing you), or
+after `--rounds` rounds (at most 10). When the Editor rebuts every finding
+without edits, the next round still runs so reviewers can check the
+rebuttals. They also stop,
+without moving your branch, if your checkout gained uncommitted changes or a
+new HEAD during the round; the commit is kept and the status shows the
+`git merge --ff-only` command to apply it. Nothing is pushed.
+
+The session page lists every round with a link to its commit's diff
+(`?round=N`), next to **Full change**, and has **Run** and **Stop** buttons.
+State is in `<session>/loop.json` and the driver log in
+`<session>/log/auto-rounds.log`. The Editor checkout is removed when the loop
+ends cleanly and kept for inspection when it fails.
+
 ## Flow: PR Updated
 
 Use this after the author pushes a new revision.
@@ -552,7 +619,8 @@ blockquote before the response.
 
 Comments describe impact and uncertainty in prose; severity fields, filters,
 CLI flags and web badges have been retired. Review categories (`comment`,
-`approve`, `request-changes`) still control GitHub review decisions. Existing
+`approve`, `request-changes`) are local labels only: `gh-push` and
+`gh-push-verdict` publish every review as a GitHub `COMMENT`. Existing
 sessions remain readable. Reads leave stored JSONL untouched; the first rewrite
 of a legacy comment file saves its original bytes in a sibling
 `<author>.jsonl.pre-severity-removal` backup before dropping severity metadata,
@@ -638,6 +706,14 @@ uses and whose tracked files are clean. Its untracked files (for example runner
 config and build logs) are listed and must be confirmed. Removal uses
 `git worktree remove` and keeps the branch, reporting commits not pushed to its
 upstream. Main clones are never removed. Requests require the page's token.
+
+GitHub sessions also show whether their PR was merged. The web server checks
+each open PR every 15 minutes with the session's bound account and stores the
+result in `<session>/pr-state.json`; `serve --pr-state-poll-seconds 0` turns
+this off, and **Check PR** on a row checks at once. A merged PR whose agents
+are not running is labelled **PR merged · safe to delete**. Nothing is deleted
+automatically: use **Delete** when you are ready. `peanut-review pr-state
+[--refresh]` prints the same result for one session.
 
 ## Review queue
 
@@ -880,8 +956,13 @@ After each poll, the account card shows the GitHub API calls used this hour,
 the limit, and when it resets (it turns red above 80%); hover it for the
 per-minute search budget. Checking the budget does not count against it.
 
-**Copy review task** and **Copy re-review task** copy a task for your driver
-conversation. It includes the PR URL, selected GitHub account, review config,
+**Choose agents** opens the personas for that pull request. Turn each one on or
+off and edit or pick its model, then copy. The copied task carries that lineup
+and tells the driver to use it for this review only. It does not change
+Settings or an existing session until the driver applies it. The curator stays
+on, and at least one reviewer must stay on. **Copy review task** and **Copy
+re-review task** copy a task that uses the saved lineup instead. Either task
+includes the PR URL, selected GitHub account, review config,
 session root, existing session/workspace, configured checkout paths, and observed
 revision. If clipboard access is unavailable, a dialog provides selectable text.
 The driver uses the peanut-review skill and CLI to fetch the latest revision,

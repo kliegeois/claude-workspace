@@ -2,6 +2,7 @@
 
 (function () {
   const BASE = (typeof window.PR_BASE_URL === "string") ? window.PR_BASE_URL : "";
+  const SESSION_KIND = (typeof window.PR_SESSION_KIND === "string") ? window.PR_SESSION_KIND : "";
   const THEME_KEY = "pr.theme";
   const THEMES = [
     { value: "system", label: "system" },
@@ -106,18 +107,50 @@
     const sessionReference = s.github_url
       ? `<a class="github-ref" href="${attrEsc(s.github_url)}" target="_blank" rel="noopener noreferrer" title="Open GitHub PR">${esc(sessionSubtitle)}</a>`
       : esc(sessionSubtitle);
+    const cleanup = s.cleanup || {};
+    const safe = Boolean(cleanup.safe_to_delete);
+    const cleanupHint = cleanup.label
+      ? `<div class="cleanup-hint${safe ? " safe" : ""}">${esc(cleanup.label)}</div>`
+      : "";
+    const check = s.is_github
+      ? `<button type="button" class="session-pr-check" data-id="${attrEsc(s.id)}" title="Check whether the PR was merged">Check PR</button>`
+      : "";
     return `
-      <tr class="session-row" data-id="${esc(s.id)}">
+      <tr class="session-row${safe ? " safe-to-delete" : ""}" data-id="${esc(s.id)}">
         <td class="id"><a href="${BASE}/${esc(s.id)}">${esc(s.id)}</a>
           <div class="mono head">${sessionReference}</div></td>
-        <td><span class="badge review-progress progress-${esc(progress.status)}" title="Agent-derived review progress">${esc(progress.label)}</span></td>
+        <td><span class="badge review-progress progress-${esc(progress.status)}" title="Agent-derived review progress">${esc(progress.label)}</span>${cleanupHint}</td>
         <td class="change" title="${esc(change)}">${esc(change)}</td>
         <td class="mono workspace">${esc(s.workspace)}</td>
         <td class="counts">${countsCell(s)}</td>
         <td class="mono updated">${updatedCell(s.updated_at)}</td>
-        <td class="session-actions"><button type="button" class="session-delete" data-id="${attrEsc(s.id)}">Delete</button></td>
+        <td class="session-actions">${check}<button type="button" class="session-delete" data-id="${attrEsc(s.id)}">Delete</button></td>
       </tr>
     `;
+  }
+
+  async function checkPr(button) {
+    const id = button.dataset.id;
+    button.disabled = true;
+    button.textContent = "Checking…";
+    try {
+      const r = await fetch(`${BASE}/${encodeURIComponent(id)}/api/session/pr-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Peanut-Queue-Token": window.PR_ACTION_TOKEN || "" },
+        body: "{}",
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `Check failed (${r.status})`);
+      if (data.error) throw new Error(data.error);
+      button.disabled = false;
+      button.textContent = "Check PR";
+      button.title = `PR is ${data.state || "unknown"} (checked ${data.checked_at || "now"})`;
+      await refresh();
+    } catch (err) {
+      button.disabled = false;
+      button.textContent = "Check PR";
+      button.title = err.message;
+    }
   }
 
   function formatBytes(bytes) {
@@ -237,6 +270,8 @@
   document.getElementById("session-rows")?.addEventListener("click", (event) => {
     const button = event.target.closest(".session-delete");
     if (button) openDeleteDialog(button.dataset.id);
+    const check = event.target.closest(".session-pr-check");
+    if (check) checkPr(check);
   });
   document.getElementById("delete-cancel")?.addEventListener("click", () => { if (!deleteBusy) deleteDialog.close(); });
   deleteConfirm?.addEventListener("click", confirmDelete);
@@ -273,6 +308,7 @@
       limit: String(PAGE_SIZE),
       offset: String(offset),
     });
+    if (SESSION_KIND) params.set("kind", SESSION_KIND);
     if (activeQuery) params.set("q", activeQuery);
     const url = BASE + "/api/sessions?" + params.toString();
     const headers = {};
@@ -335,4 +371,98 @@
     sessionSearch.select();
   });
   setInterval(refresh, 15000);
+
+  // New local review form (Local reviews tab only).
+  const localForm = document.getElementById("local-new-form");
+  const localAgents = document.getElementById("local-new-agents");
+  const localError = document.getElementById("local-new-error");
+  let settingsConfigs = [];
+
+  function showLocalError(message) {
+    if (!localError) return;
+    localError.textContent = message || "";
+    localError.hidden = !message;
+  }
+
+  function renderLocalAgents() {
+    if (!localForm || !localAgents) return;
+    const path = localForm.elements.config.value;
+    const config = settingsConfigs.find((c) => c.path === path);
+    const agents = config ? config.agents : [];
+    if (!agents.length) {
+      localAgents.innerHTML = `<legend>Agents</legend><p class="sub">${esc(config && config.error ? config.error : "No agents configured.")}</p>`;
+      return;
+    }
+    const rows = agents.map((a) => `<label class="local-agent">`
+      + `<input type="checkbox" data-agent="${attrEsc(a.name)}"${a.enabled || a.role === "curator" ? " checked" : ""}${a.role === "curator" ? " disabled title=\"The curator is required\"" : ""}> `
+      + `<span class="agent-name">${esc(a.name)}</span> <span class="sub">${esc(a.role)}${a.persona ? " · " + esc(a.persona) : ""}</span> `
+      + `<input class="mono local-agent-model" list="local-model-options" data-model="${attrEsc(a.name)}" value="${attrEsc(a.model)}" aria-label="${attrEsc(a.name)} model">`
+      + `</label>`).join("");
+    const hasEditor = agents.some((a) => a.role === "editor");
+    const editorNote = hasEditor ? "" : `<p class="sub warn">No Editor agent in this config. Add one in Settings before starting a local review.</p>`;
+    localAgents.innerHTML = `<legend>Agents</legend>${rows}${editorNote}<datalist id="local-model-options"></datalist>`;
+    loadModelOptions(document.getElementById("local-model-options"));
+  }
+
+  async function loadModelOptions(datalist) {
+    if (!datalist) return;
+    try {
+      const r = await fetch(`${BASE}/api/models`, { cache: "no-store" });
+      const data = await r.json();
+      datalist.innerHTML = (data.models || []).map((m) => `<option value="${attrEsc(m.id)}">${esc(m.label)}</option>`).join("");
+    } catch { /* free text still works */ }
+  }
+
+  async function loadLocalSettings() {
+    try {
+      const r = await fetch(`${BASE}/api/settings`, { cache: "no-store" });
+      const data = await r.json();
+      settingsConfigs = data.configs || [];
+    } catch (err) {
+      settingsConfigs = [];
+      showLocalError(`Cannot load agent settings: ${err.message}`);
+    }
+    renderLocalAgents();
+  }
+
+  async function startLocalReview(event) {
+    event.preventDefault();
+    showLocalError("");
+    const submit = document.getElementById("local-new-submit");
+    const agents = Array.from(localAgents.querySelectorAll("input[data-agent]")).map((box) => {
+      const model = ((localAgents.querySelector(`input[data-model="${CSS.escape(box.dataset.agent)}"]`) || {}).value || "").trim();
+      return model ? { name: box.dataset.agent, enabled: box.checked, model }
+        : { name: box.dataset.agent, enabled: box.checked };
+    });
+    const body = {
+      workspace: localForm.elements.workspace.value.trim(),
+      base: localForm.elements.base.value.trim(),
+      config: localForm.elements.config.value,
+      rounds: Number(localForm.elements.rounds.value || 0),
+      agents,
+    };
+    submit.disabled = true;
+    submit.textContent = "Starting…";
+    try {
+      const r = await fetch(`${BASE}/api/local/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Peanut-Queue-Token": window.PR_ACTION_TOKEN || "" },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok && !data.session_id) throw new Error(data.error || `Start failed (${r.status})`);
+      if (!r.ok) alert(data.error);
+      window.location.href = `${BASE}/${encodeURIComponent(data.session_id)}`;
+    } catch (err) {
+      showLocalError(err.message);
+      submit.disabled = false;
+      submit.textContent = "Start review";
+    }
+  }
+
+  if (localForm) {
+    localForm.elements.config.addEventListener("change", renderLocalAgents);
+    localForm.addEventListener("submit", startLocalReview);
+    loadLocalSettings();
+  }
 })();

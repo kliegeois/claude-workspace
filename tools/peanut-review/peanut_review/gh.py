@@ -575,13 +575,13 @@ def post_pr_review(
     commit_id: str | None = None,
     comments: list[dict] | None = None,
 ) -> dict:
-    """Submit a PR review (verdict). `event` must be one of APPROVE,
-    REQUEST_CHANGES, COMMENT (GitHub's enum). `body` is optional except
-    REQUEST_CHANGES which requires it. `comments` batches inline review
-    comments into the same submitted review.
+    """Submit a PR review. `event` must be COMMENT: peanut-review never
+    approves or requests changes, so a published review cannot block or
+    approve a PR. `comments` batches inline review comments into the same
+    submitted review.
     """
-    if event not in {"APPROVE", "REQUEST_CHANGES", "COMMENT"}:
-        raise ValueError(f"event must be APPROVE/REQUEST_CHANGES/COMMENT, got {event!r}")
+    if event != "COMMENT":
+        raise ValueError(f"peanut-review only submits COMMENT reviews, got {event!r}")
     payload: dict = {"event": event}
     if body:
         payload["body"] = body

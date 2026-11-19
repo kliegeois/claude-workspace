@@ -900,6 +900,7 @@ def _render_sidebar(
     files: list[FileDiff],
     notes: list[Note] | None = None,
     agent_runtime: dict[str, dict[str, str]] | None = None,
+    rounds_html: str = "",
 ) -> str:
     # Sidebar counters reflect what's visible (deleted hidden), with a
     # separate "deleted" row so the audit count is still discoverable.
@@ -994,11 +995,14 @@ def _render_sidebar(
             f'title="Stop {agent_attr}">kill</button>'
             if can_kill else ""
         )
+        disabled = a.enabled is False
+        off_badge = '<span class="agent-off">off</span>' if disabled else ""
         agent_rows += (
-            f'<li class="agent-row" data-agent="{agent_attr}">'
+            f'<li class="agent-row{" agent-disabled" if disabled else ""}" data-agent="{agent_attr}">'
             '<div class="agent-main">'
             '<span class="agent-ident">'
             f'<span class="agent-name">{agent_name}</span>'
+            f'{off_badge}'
             f'<span class="agent-model mono" title="{model_attr}">{model}</span>'
             '</span>'
             '<span class="agent-controls">'
@@ -1083,6 +1087,8 @@ def _render_sidebar(
         '<div class="sidebar-heading agents-heading">'
         '<h3>Agents</h3>'
         '<span class="agent-heading-actions">'
+        '<button id="agent-config-btn" type="button" class="agent-config" '
+        'title="Enable or disable agents and choose their models for this session">configure</button>'
         f'{curator_button}'
         f'{rerun_all_button}'
         '<button id="kill-all-agents-btn" type="button" class="agent-kill-all" '
@@ -1090,6 +1096,7 @@ def _render_sidebar(
         '</span>'
         '</div>'
         f'<ul id="agent-list" class="agent-list">{agent_rows or "<li>(none)</li>"}</ul>'
+        f'{rounds_html}'
         '<h3>Navigation</h3>'
         '<ul class="shortcuts">'
         '<li><span class="keys"><kbd>n</kbd><kbd>p</kbd></span>'
@@ -1219,19 +1226,75 @@ def _render_session_row(s: dict, base_url: str = "") -> str:
         + (f' · <span class="n muted">{stale}</span><span class="sub"> stale</span>' if stale else "")
         + push_activity
     )
+    cleanup = s.get("cleanup") or {}
+    safe = bool(cleanup.get("safe_to_delete"))
+    cleanup_html = (
+        f'<div class="cleanup-hint{" safe" if safe else ""}">{html.escape(cleanup["label"])}</div>'
+        if cleanup.get("label") else ""
+    )
+    check_html = (
+        f'<button type="button" class="session-pr-check" data-id="{sid}" '
+        f'title="Check whether the PR was merged">Check PR</button>'
+        if s.get("is_github") else ""
+    )
     return (
-        f'<tr class="session-row" data-id="{sid}">'
+        f'<tr class="session-row{" safe-to-delete" if safe else ""}" data-id="{sid}">'
         f'<td class="id"><a href="{base_url}/{sid}">{sid}</a>'
         f'<div class="mono head">{session_reference}</div></td>'
         f'<td><span class="badge review-progress progress-{progress_status}" '
-        f'title="Agent-derived review progress">{progress_label}</span></td>'
+        f'title="Agent-derived review progress">{progress_label}</span>{cleanup_html}</td>'
         f'<td class="change" title="{change}">{change}</td>'
         f'<td class="mono workspace">{workspace}</td>'
         f'<td class="counts">{counts}</td>'
         f'<td class="mono updated">{updated}</td>'
-        f'<td class="session-actions"><button type="button" class="session-delete" '
+        f'<td class="session-actions">{check_html}<button type="button" class="session-delete" '
         f'data-id="{sid}">Delete</button></td>'
         f'</tr>'
+    )
+
+
+APP_TABS = (
+    ("queue", "/queue", "Review queue"),
+    ("github", "/", "PR reviews"),
+    ("local", "/local", "Local reviews"),
+    ("settings", "/settings", "Settings"),
+)
+
+
+def render_app_nav(base_url: str, current: str) -> str:
+    base = html.escape(base_url, quote=True)
+    current_attr = ' aria-current="page"'
+    links = "".join(
+        f'<a href="{base}{path}"{current_attr if key == current else ""}>{label}</a>'
+        for key, path, label in APP_TABS
+    )
+    return f'<nav class="app-nav" aria-label="Dashboard">{links}</nav>'
+
+
+def _render_local_form(review_configs: list[str]) -> str:
+    options = "".join(
+        f'<option value="{html.escape(p, quote=True)}">{html.escape(p)}</option>'
+        for p in review_configs
+    ) or '<option value="">(none found)</option>'
+    return (
+        '<details id="local-new" class="local-new">'
+        '<summary>New local review</summary>'
+        '<form id="local-new-form" class="local-new-form" autocomplete="off">'
+        '<label>Worktree <input name="workspace" required placeholder="/path/to/worktree" '
+        'class="mono"></label>'
+        '<label>Base commit <input name="base" required placeholder="SHA the branch starts from" '
+        'class="mono"></label>'
+        f'<label>Review config <select name="config">{options}</select></label>'
+        '<label>Max rounds <input name="rounds" type="number" min="1" max="10" value="3"></label>'
+        '<p class="sub">Each round runs the reviewers and the curator, then the Editor fixes or '
+        'rebuts what is left and its edits become one local commit on your branch. Rounds stop '
+        'early when the curator leaves no unresolved findings or the Editor changes nothing. '
+        'Your worktree must stay clean while rounds run. Nothing is pushed.</p>'
+        '<fieldset id="local-new-agents"><legend>Agents</legend>'
+        '<p class="sub">Loading agents…</p></fieldset>'
+        '<p id="local-new-error" class="error" role="alert" hidden></p>'
+        '<button id="local-new-submit" type="submit" class="primary">Start review</button>'
+        '</form></details>'
     )
 
 
@@ -1243,6 +1306,8 @@ def render_index(
     total_sessions: int | None = None,
     has_more: bool = False,
     action_token: str = "",
+    kind: str = "github",
+    review_configs: list[str] | None = None,
 ) -> str:
     """Session-picker page served at `/`.
 
@@ -1255,8 +1320,17 @@ def render_index(
     script_url = html.escape(_asset_url(base_url, "index.js"), quote=True)
     total = len(sessions) if total_sessions is None else total_sessions
     rows = "\n".join(_render_session_row(s, base_url) for s in sessions)
+    is_local = kind == "local"
+    noun = "local review" if is_local else "PR review"
+    empty_hint = (
+        'Start one with <strong>New local review</strong> above, or with:'
+        '<pre class="mono">peanut-review init --workspace . --base &lt;sha&gt; --topic HEAD</pre>'
+        if is_local else
+        'Start one with:<pre class="mono">peanut-review start &lt;pr-url&gt; --no-launch</pre>'
+    )
     body = (
-        f'<table class="sessions"{"" if sessions else " hidden"}>'
+        (_render_local_form(review_configs or []) if is_local else "")
+        + f'<table class="sessions"{"" if sessions else " hidden"}>'
         '<thead><tr>'
         '<th>Session</th><th>Progress</th><th>Change</th>'
         '<th>Workspace</th><th>Comments</th><th>Updated</th><th></th>'
@@ -1264,9 +1338,8 @@ def render_index(
         f'<tbody id="session-rows">{rows}</tbody>'
         '</table>'
         f'<div id="session-empty" class="empty"{" hidden" if sessions else ""}>'
-        f'No review sessions found under <span class="mono">{roots_str}</span>.'
-        '<br><br>Create one with:'
-        '<pre class="mono">peanut-review init --workspace . --base main --topic HEAD</pre>'
+        f'No {noun}s found under <span class="mono">{roots_str}</span>.'
+        f'<br><br>{empty_hint}'
         '</div>'
         f'<button id="load-more" type="button"'
         f'{"" if has_more else " hidden"}>Load older sessions</button>'
@@ -1277,7 +1350,7 @@ def render_index(
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>peanut-review — sessions</title>
+  <title>peanut-review — {noun}s</title>
   <link rel="icon" href="{FAVICON_HREF}">
   <link rel="stylesheet" href="{style_url}">
   {THEME_BOOTSTRAP}
@@ -1285,7 +1358,7 @@ def render_index(
 <body class="index">
   <header>
     <h1><a href="{index_href}">🥜 peanut-review</a></h1>
-    <nav class="app-nav" aria-label="Dashboard"><a href="{html.escape(base_url, quote=True)}/queue">Review queue</a><a href="{html.escape(base_url, quote=True)}/" aria-current="page">Sessions</a></nav>
+    {render_app_nav(base_url, "local" if is_local else "github")}
     <span id="session-count" class="meta">{total} session{"s" if total != 1 else ""}</span>
     <span class="meta mono">{roots_str}</span>
     <span class="spacer"></span>
@@ -1310,11 +1383,129 @@ def render_index(
   <script>
     window.PR_BASE_URL = {base_url_js};
     window.PR_ACTION_TOKEN = {json.dumps(action_token)};
+    window.PR_SESSION_KIND = {json.dumps(kind)};
   </script>
   <script src="{script_url}"></script>
 </body>
 </html>
 """
+
+
+def render_settings(base_url: str, action_token: str) -> str:
+    """Settings tab: enable agents and pick models in the project review config."""
+    base_url_js = json.dumps(base_url)
+    style_url = html.escape(_asset_url(base_url, "style.css"), quote=True)
+    script_url = html.escape(_asset_url(base_url, "settings.js"), quote=True)
+    index_href = base_url if base_url else "/"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>peanut-review — settings</title>
+  <link rel="icon" href="{FAVICON_HREF}">
+  <link rel="stylesheet" href="{style_url}">
+  {THEME_BOOTSTRAP}
+</head>
+<body class="index settings-page">
+  <header>
+    <h1><a href="{index_href}">🥜 peanut-review</a></h1>
+    {render_app_nav(base_url, "settings")}
+    <span class="spacer"></span>
+    <button id="models-refresh" type="button" title="Reload the model list from cursor-agent">Reload models</button>
+  </header>
+  <main class="index-main">
+    <h2>Agents for new sessions</h2>
+    <p class="meta">These settings apply to sessions created after you save, for both PR and
+      local reviews. To change one existing session, use <strong>configure</strong> in its
+      Agents panel before a launch or rerun.</p>
+    <div id="settings-configs" aria-live="polite">Loading…</div>
+    <datalist id="model-options"></datalist>
+  </main>
+  <script>
+    window.PR_BASE_URL = {base_url_js};
+    window.PR_ACTION_TOKEN = {json.dumps(action_token)};
+  </script>
+  <script src="{script_url}"></script>
+</body>
+</html>
+"""
+
+
+ROUND_STATUS_LABELS = {
+    "reviewing": "reviewers running",
+    "curating": "curator running",
+    "editing": "Editor running",
+    "converged": "converged: no open findings",
+    "no-changes": "Editor changed nothing",
+    "committed": "committed",
+    "not-applied": "commit not applied",
+}
+LOOP_STATUS_LABELS = {
+    "starting": "starting",
+    "running": "running",
+    "converged": "converged",
+    "done": "finished",
+    "blocked": "stopped: needs you",
+    "stopped": "stopped",
+    "failed": "failed",
+    "interrupted": "interrupted",
+}
+
+
+def _render_rounds_panel(base_url: str, session_id: str, loop: dict | None,
+                         active_round: int | None) -> str:
+    """Sidebar panel for automatic local rounds: status, controls, per-round diffs."""
+    session_href = html.escape(f"{base_url}/{session_id}", quote=True)
+    running = bool(loop and loop.get("running"))
+    rows = []
+    for record in (loop or {}).get("rounds", []):
+        number = int(record.get("number") or 0)
+        label = html.escape(ROUND_STATUS_LABELS.get(record.get("status"), record.get("status") or ""))
+        findings = record.get("open_findings")
+        detail = f" · {findings} open" if findings is not None else ""
+        failed = record.get("failed_reviewers") or []
+        if failed:
+            detail += f" · failed: {', '.join(failed)}"
+        if record.get("head_after"):
+            short = html.escape(record["head_after"][:10])
+            current = ' aria-current="page"' if active_round == number else ""
+            link = (f'<a href="{session_href}?round={number}"{current} '
+                    f'title="Diff of this round\'s Editor commit">{short}</a>')
+        else:
+            link = '<span class="sub">no commit</span>'
+        rows.append(
+            f'<li class="round-row" data-round="{number}">'
+            f'<span class="round-num">Round {number}</span> {link}'
+            f'<div class="sub">{label}{html.escape(detail)}</div></li>'
+        )
+    full_current = ' aria-current="page"' if not active_round else ""
+    if loop:
+        status = loop.get("status", "")
+        summary = (f'<p class="rounds-status rounds-{html.escape(status)}">'
+                   f'{html.escape(LOOP_STATUS_LABELS.get(status, status))}'
+                   f' · up to {int(loop.get("max_rounds") or 0)} rounds</p>')
+        if loop.get("reason"):
+            summary += f'<p class="sub">{html.escape(loop["reason"])}</p>'
+        if loop.get("editor_worktree") and not running:
+            summary += (f'<p class="sub">Editor checkout kept at '
+                        f'<span class="mono">{html.escape(loop["editor_worktree"])}</span></p>')
+    else:
+        summary = '<p class="sub">Not started. Each round runs the reviewers and the curator, then the Editor commits fixes.</p>'
+    controls = (
+        '<button id="rounds-stop-btn" type="button">Stop</button>' if running else
+        '<label class="rounds-start">Rounds <input id="rounds-count" type="number" min="1" '
+        'max="10" value="3"></label> <button id="rounds-start-btn" type="button">Run</button>'
+    )
+    return (
+        '<div class="rounds-panel" id="rounds-panel">'
+        '<h3>Automatic rounds</h3>'
+        f'{summary}'
+        f'<div class="rounds-controls">{controls}</div>'
+        '<p id="rounds-error" class="error" role="alert" hidden></p>'
+        f'<ul class="rounds-list"><li class="round-row"><a href="{session_href}"{full_current}>'
+        f'Full change</a></li>{"".join(rows)}</ul>'
+        '</div>'
+    )
 
 
 def render_page(
@@ -1328,6 +1519,9 @@ def render_page(
     base_url: str = "",
     agent_runtime: dict[str, dict[str, str]] | None = None,
     poll_etags: dict[str, str] | None = None,
+    action_token: str = "",
+    loop: dict | None = None,
+    active_round: int | None = None,
 ) -> str:
     """Build the full HTML page for a session.
 
@@ -1335,7 +1529,9 @@ def render_page(
     `notes` are non-review agent reports rendered at the bottom; None falls
     back to empty so tests/non-server callers do not have to pass them.
     """
-    threads_at = _group_threads_by_anchor(comments)
+    # A round view diffs one Editor commit; comment anchors belong to the full
+    # change, so inline threads are left out there.
+    threads_at = _group_threads_by_anchor([] if active_round else comments)
     note_items = notes or []
     file_parts: list[str] = []
     remaining_rows = MAX_INITIAL_PAGE_LINES
@@ -1357,7 +1553,18 @@ def render_page(
         session, comments, files,
         notes=note_items,
         agent_runtime=agent_runtime,
+        rounds_html=(
+            _render_rounds_panel(base_url, session_id, loop, active_round)
+            if session.github is None else ""
+        ),
     )
+    round_banner = ""
+    if active_round:
+        full_href = html.escape(f"{base_url}/{session_id}", quote=True)
+        round_banner = (
+            f'<div class="round-banner">Showing the Editor commit of round {active_round} only. '
+            f'Comments are shown on the <a href="{full_href}">full change</a>.</div>'
+        )
 
     head_badge = (
         '<span class="badge head head-shifted" '
@@ -1417,11 +1624,14 @@ def render_page(
     poll_etags_js = json.dumps(
         poll_etags or {}, separators=(",", ":"),
     ).replace("</", "<\\/")
+    loop_js = json.dumps(loop, separators=(",", ":")).replace("</", "<\\/")
 
     style_url = html.escape(_asset_url(base_url, "style.css"), quote=True)
     script_url = html.escape(_asset_url(base_url, "app.js"), quote=True)
 
     index_href = base_url if base_url else "/"
+    if session.github is None:
+        index_href = f"{base_url}/local"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1452,7 +1662,8 @@ def render_page(
   </header>
   <main>
     {sidebar}
-    {global_html}
+    {round_banner}
+    {"" if active_round else global_html}
     {file_html}
     {report_html}
   </main>
@@ -1465,6 +1676,7 @@ def render_page(
                 title="Close">×</button>
       </div>
       <div class="modal-body" id="gh-push-body">Loading…</div>
+      <p class="gh-push-note">Posts a comment review. It never approves the PR or requests changes.</p>
       <div class="modal-footer">
         <button id="gh-push-cancel" type="button" data-modal-close>Cancel</button>
         <button id="gh-push-confirm" type="button" class="primary" disabled>
@@ -1473,12 +1685,26 @@ def render_page(
       </div>
     </div>
   </div>
+  <dialog id="agent-config-dialog" class="delete-dialog" aria-labelledby="agent-config-title">
+    <h2 id="agent-config-title">Agents for this session</h2>
+    <p class="sub">Changes apply to the next launch or rerun. They cannot be made while an agent runs.</p>
+    <div id="agent-config-body"></div>
+    <datalist id="agent-model-options"></datalist>
+    <p id="agent-config-error" class="error" role="alert" hidden></p>
+    <div class="delete-actions">
+      <button id="agent-config-cancel" type="button">Cancel</button>
+      <button id="agent-config-save" type="button" class="primary">Save</button>
+    </div>
+  </dialog>
   <script>
     window.PR_BASE_URL = {base_url_js};
+    window.PR_ACTION_TOKEN = {json.dumps(action_token)};
     window.PR_SESSION_URL = {session_url_js};
     window.PR_SESSION_ID = {session_id_js};
     window.PR_KNOWN_COMMENT_IDS = {known_comment_ids_js};
     window.PR_POLL_ETAGS = {poll_etags_js};
+    window.PR_ROUND_VIEW = {json.dumps(active_round)};
+    window.PR_LOOP = {loop_js};
   </script>
   <script src="{script_url}"></script>
 </body>

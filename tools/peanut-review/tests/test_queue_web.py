@@ -87,6 +87,22 @@ def test_queue_rejects_nonlocal_host_and_invalid_actions(server):
     assert request(url, "/api/queue/unknown", data={}, headers=headers)[0] == 404
 
 
+def test_queue_task_returns_a_lineup_without_launching(server):
+    url, queue = server
+    queue.task_with_agents.return_value = "Review with the chosen lineup"
+    headers = {"X-Peanut-Queue-Token": token(url)}
+    code, body = request(url, "/api/queue/task", data={
+        "key": "abc", "agents": [{"name": "Vera", "enabled": True, "model": "m2"}],
+    }, headers=headers)
+    assert code == 200 and json.loads(body)["task"] == "Review with the chosen lineup"
+    queue.task_with_agents.assert_called_once_with("abc", [{"name": "Vera", "enabled": True, "model": "m2"}])
+    queue.enqueue.assert_not_called()
+    queue.task_with_agents.side_effect = ValueError("at least one reviewer must stay enabled")
+    assert request(url, "/api/queue/task", data={"key": "abc", "agents": []}, headers=headers)[0] == 400
+    queue.task_with_agents.side_effect = KeyError("missing")
+    assert request(url, "/api/queue/task", data={"key": 1}, headers=headers)[0] == 404
+
+
 @pytest.fixture
 def startup(tmp_path, monkeypatch):
     from peanut_review.web import app

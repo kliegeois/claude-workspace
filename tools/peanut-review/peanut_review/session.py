@@ -39,7 +39,7 @@ def _validate_session_id(sid: str) -> None:
             f"invalid session id {sid!r}: only [A-Za-z0-9_-] allowed"
         )
     # Mirrors web/app.py:RESERVED_ROOTS — keep them in sync.
-    if sid in {"api", "queue"}:
+    if sid in {"api", "queue", "local", "settings"}:
         raise ValueError(f"session id {sid!r} collides with a reserved route")
 
 

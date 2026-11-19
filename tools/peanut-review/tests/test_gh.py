@@ -1206,7 +1206,7 @@ def test_gh_push_promotes_unreviewable_anchor_to_global(gh_shim, tmp_path):
     assert stored.external_synced_body == payload["body"]
 
 
-def test_gh_push_global_approval_posts_pr_review(gh_shim, tmp_path):
+def test_gh_push_global_approval_posts_comment_review(gh_shim, tmp_path):
     sd = _make_gh_session(tmp_path)
     store.append_comment(sd, models.Comment(
         author="felix", file="", line=0, body="lgtm",
@@ -1225,7 +1225,7 @@ def test_gh_push_global_approval_posts_pr_review(gh_shim, tmp_path):
     assert rc == 0
     [call] = gh_shim.calls()
     assert call["argv"][:4] == ["api", "repos/acme/foo/pulls/42/reviews", "-X", "POST"]
-    assert json.loads(call["stdin"]) == {"event": "APPROVE", "body": "lgtm"}
+    assert json.loads(call["stdin"]) == {"event": "COMMENT", "body": "lgtm"}
 
     [stored] = store.read_all_comments(sd)
     assert stored.external_source == "github-review"
@@ -1234,7 +1234,7 @@ def test_gh_push_global_approval_posts_pr_review(gh_shim, tmp_path):
     assert stored.deleted_by is None
 
 
-def test_gh_push_global_request_changes_posts_blocking_review(gh_shim, tmp_path):
+def test_gh_push_global_request_changes_posts_comment_review(gh_shim, tmp_path):
     sd = _make_gh_session(tmp_path)
     store.append_comment(sd, models.Comment(
         author="felix", file="", line=0, body="fix the tests",
@@ -1250,9 +1250,15 @@ def test_gh_push_global_request_changes_posts_blocking_review(gh_shim, tmp_path)
     assert rc == 0
     [call] = gh_shim.calls()
     assert json.loads(call["stdin"]) == {
-        "event": "REQUEST_CHANGES",
+        "event": "COMMENT",
         "body": "fix the tests",
     }
+
+
+@pytest.mark.parametrize("event", ["APPROVE", "REQUEST_CHANGES"])
+def test_post_pr_review_refuses_approve_and_request_changes(event):
+    with pytest.raises(ValueError, match="only submits COMMENT"):
+        gh.post_pr_review("acme/foo", 42, event=event, body="x")
 
 
 def test_gh_push_skips_already_pushed_comments(gh_shim, tmp_path):
@@ -2342,7 +2348,7 @@ def _stage_verdict(sd: str, decision: str, body: str = "") -> Path:
     return p
 
 
-def test_gh_push_verdict_approve_maps_to_event(gh_shim, tmp_path):
+def test_gh_push_verdict_approve_posts_comment(gh_shim, tmp_path):
     sd = _make_gh_session(tmp_path)
     _stage_verdict(sd, "approve", "lgtm")
 
@@ -2356,9 +2362,10 @@ def test_gh_push_verdict_approve_maps_to_event(gh_shim, tmp_path):
         rc = main(["--session", sd, "gh-push-verdict"])
     assert rc == 0
     [call] = gh_shim.calls()
-    assert json.loads(call["stdin"]) == {"event": "APPROVE", "body": "lgtm"}
+    assert json.loads(call["stdin"]) == {"event": "COMMENT", "body": "lgtm"}
 
     v = models.Verdict.from_json((Path(sd) / "result.json").read_text())
+    assert v.decision == "approve"
     assert v.external_review_id == "9001"
     assert v.external_review_url == "https://h/r/9001"
 
@@ -2380,7 +2387,7 @@ def test_gh_push_verdict_comment_maps_to_event(gh_shim, tmp_path):
     assert json.loads(call["stdin"]) == {"event": "COMMENT", "body": "non-blocking thoughts"}
 
 
-def test_gh_push_verdict_request_changes_maps_to_event(gh_shim, tmp_path):
+def test_gh_push_verdict_request_changes_posts_comment(gh_shim, tmp_path):
     sd = _make_gh_session(tmp_path)
     _stage_verdict(sd, "request-changes", "fix the test")
 
@@ -2392,7 +2399,7 @@ def test_gh_push_verdict_request_changes_maps_to_event(gh_shim, tmp_path):
     rc = main(["--session", sd, "gh-push-verdict"])
     assert rc == 0
     [call] = gh_shim.calls()
-    assert json.loads(call["stdin"])["event"] == "REQUEST_CHANGES"
+    assert json.loads(call["stdin"])["event"] == "COMMENT"
 
 
 def test_gh_push_verdict_rejects_mismatched_active_account(gh_shim, tmp_path):
@@ -2461,5 +2468,5 @@ def test_gh_push_verdict_dry_run(gh_shim, tmp_path):
     with redirect_stdout(out):
         rc = main(["--session", sd, "gh-push-verdict", "--dry-run"])
     assert rc == 0
-    assert "[dry-run] APPROVE" in out.getvalue()
+    assert "[dry-run] COMMENT" in out.getvalue()
     assert gh_shim.calls() == []

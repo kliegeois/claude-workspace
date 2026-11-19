@@ -84,9 +84,12 @@ def _validate_agent_configs(
             )
 
         _as_non_empty_string(agent.get("model"), f"{label}.model", errors)
+        enabled = agent.get("enabled", True)
+        if not isinstance(enabled, bool):
+            errors.append(f"{label}.enabled must be a boolean")
         persona_raw = agent.get("persona")
         persona = ""
-        if role == AgentRole.CURATOR.value and not persona_raw:
+        if role in {AgentRole.CURATOR.value, AgentRole.EDITOR.value} and not persona_raw:
             pass
         else:
             persona = _as_non_empty_string(persona_raw, f"{label}.persona", errors)
@@ -123,6 +126,12 @@ def _validate_agent_configs(
             elif runner != "codex":
                 errors.append(f"{label}.fastMode is only supported with runner 'codex'")
 
+        if role == AgentRole.EDITOR.value and runner != "cursor":
+            errors.append(
+                f"{label}.runner must be 'cursor' for editor agents; other runners "
+                "do not enforce the Editor's command allow list"
+            )
+
         ssh_target = agent.get("sshTarget", agent.get("ssh_target"))
         if ssh_target is not None:
             if not isinstance(ssh_target, str) or not ssh_target.strip():
@@ -131,6 +140,8 @@ def _validate_agent_configs(
                 errors.append(f"{label}.sshTarget references unknown target {ssh_target!r}")
             elif role == AgentRole.CURATOR.value:
                 errors.append(f"{label}.sshTarget is not supported for curator agents")
+            elif role == AgentRole.EDITOR.value:
+                errors.append(f"{label}.sshTarget is not supported for editor agents")
             elif runner == "copilot":
                 errors.append(f"{label}.sshTarget is not supported with runner 'copilot'")
 

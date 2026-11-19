@@ -1060,10 +1060,11 @@ def cmd_gh_pull(args: argparse.Namespace) -> int:
 
 
 def cmd_gh_push_verdict(args: argparse.Namespace) -> int:
-    """Submit `result.json` as a GitHub PR review (verdict).
+    """Submit `result.json` as a GitHub COMMENT review.
 
-    Maps decision: approve → APPROVE, request-changes → REQUEST_CHANGES.
-    Refuses if no result.json exists or the verdict has already been
+    Every local decision is published as COMMENT, so peanut-review never
+    approves or requests changes on a PR. The local decision stays in
+    result.json. Refuses if no result.json exists or the verdict has already been
     submitted (Verdict.external_review_id set) unless --force is passed.
     """
     from . import gh
@@ -1086,17 +1087,12 @@ def cmd_gh_push_verdict(args: argparse.Namespace) -> int:
               f"Use --force to re-submit.", file=sys.stderr)
         return 1
 
-    event_map = {
-        "approve": "APPROVE",
-        "request-changes": "REQUEST_CHANGES",
-        "comment": "COMMENT",
-    }
-    event = event_map.get(v.decision)
-    if event is None:
+    if v.decision not in {"approve", "request-changes", "comment"}:
         print(f"Error: unknown verdict decision {v.decision!r} "
               f"(expected approve, request-changes, or comment)",
               file=sys.stderr)
         return 1
+    event = "COMMENT"
 
     if args.dry_run:
         try:
@@ -1436,6 +1432,48 @@ def cmd_cleanup_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_auto_rounds(args: argparse.Namespace) -> int:
+    """Run automatic review/edit rounds in the foreground."""
+    import signal
+    from . import auto_rounds
+    session_dir = _get_session_dir(args)
+    if args.status:
+        print(json.dumps(auto_rounds.loop_status(session_dir), indent=2))
+        return 0
+    if args.rounds is None:
+        print("Error: --rounds is required", file=sys.stderr)
+        return 1
+    signal.signal(signal.SIGTERM, auto_rounds.stop_on_signal(session_dir))
+    try:
+        state = auto_rounds.run(session_dir, args.rounds)
+    except (ValueError, RuntimeError, TimeoutError, OSError, subprocess.SubprocessError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    print(f"auto-rounds {state['status']}: {state['reason']}")
+    for record in state["rounds"]:
+        after = (record.get("head_after") or "")[:12] or "-"
+        print(f"  round {record['number']}: {record['status']} "
+              f"({record.get('open_findings')} open findings, commit {after})")
+    return 0
+
+
+def cmd_pr_state(args: argparse.Namespace) -> int:
+    """Show whether the session's PR is open, closed, or merged."""
+    from . import pr_state
+    from .web.progress import summarize_agent_progress
+    session_dir = _get_session_dir(args)
+    state = pr_state.refresh_pr_state(
+        session_dir, force=args.refresh, min_age_seconds=pr_state.DEFAULT_POLL_SECONDS,
+    )
+    if not state:
+        print("Error: this session is not a GitHub review", file=sys.stderr)
+        return 1
+    session = sess.load_session(session_dir)
+    progress = summarize_agent_progress(session.agents)
+    print(json.dumps({**state, **pr_state.cleanup_hint(state, progress["status"])}, indent=2))
+    return 1 if state.get("error") else 0
+
+
 def cmd_recover_completion(args: argparse.Namespace) -> int:
     from . import review_completion
     try:
@@ -1572,6 +1610,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
             roots, host=args.host, port=args.port, extra_sessions=extras,
             base_url=args.base_url or "",
             queue_config=getattr(args, "queue_config", None),
+            pr_state_poll_seconds=getattr(args, "pr_state_poll_seconds", 15 * 60),
+            review_config=getattr(args, "review_config", None),
         )
     except (RuntimeError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -1905,7 +1945,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # gh-push-verdict
     sp = sub.add_parser("gh-push-verdict",
-                        help="Submit result.json as a GitHub PR review (approve/request-changes)")
+                        help="Submit result.json as a GitHub COMMENT review (never approves or blocks)")
     sp.add_argument("--dry-run", action="store_true",
                     help="Print the planned event without submitting")
     sp.add_argument("--force", action="store_true",
@@ -1997,6 +2037,18 @@ def build_parser() -> argparse.ArgumentParser:
     # status
     sp = sub.add_parser("status", help="Show session status")
 
+    sp = sub.add_parser("pr-state", help="Show whether the PR is merged and the session is safe to delete")
+    sp.add_argument("--refresh", action="store_true", help="Fetch from GitHub even if recently checked")
+
+    sp = sub.add_parser(
+        "auto-rounds",
+        help="Run review, curate, and Editor rounds on a local session until it converges",
+    )
+    sp.add_argument("--rounds", type=int, default=None,
+                    help="Maximum review/edit rounds (1-10); required unless --status")
+    sp.add_argument("--status", action="store_true",
+                    help="Print the recorded round state instead of running")
+
     sp = sub.add_parser("recover-completion", help="Recover a signaled reviewer after supervisor loss")
     sp.add_argument("--agent", required=True, help="Reviewer with missing terminal bookkeeping")
     sp.add_argument("--dry-run", action="store_true", help="Validate evidence without changing records")
@@ -2008,6 +2060,11 @@ def build_parser() -> argparse.ArgumentParser:
     # serve
     sp = sub.add_parser("serve", help="Start the multi-session web UI")
     sp.add_argument("--queue-config", metavar="PATH", help="Local account/repository configuration for the review queue")
+    sp.add_argument("--pr-state-poll-seconds", type=float, default=15 * 60, metavar="SECONDS",
+                    help="How often to check whether reviewed PRs were merged; 0 disables (default: 900)")
+    sp.add_argument("--review-config", metavar="PATH",
+                    help="Project .peanut-review.json edited by the Settings tab "
+                         "(default: the queue's reviewConfig, then <root>/../.peanut-review.json)")
     sp.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
     sp.add_argument("--port", type=int, default=0,
                     help="Bind port (0 = OS-assigned, default)")
@@ -2102,6 +2159,8 @@ def main(argv: list[str] | None = None) -> int:
         "migrate": cmd_migrate,
         "status": cmd_status,
         "recover-completion": cmd_recover_completion,
+        "pr-state": cmd_pr_state,
+        "auto-rounds": cmd_auto_rounds,
         "cleanup-status": cmd_cleanup_status,
         "retain-git": cmd_retain_git,
         "archive": cmd_archive,

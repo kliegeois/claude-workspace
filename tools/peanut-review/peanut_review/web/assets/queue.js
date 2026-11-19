@@ -117,16 +117,122 @@
     byId("queue-error").textContent = message;
     byId("queue-error").hidden = !message;
   }
-  async function copyTask(item) {
+  async function copyText(task) {
     try {
-      await navigator.clipboard.writeText(item.driver_task);
+      await navigator.clipboard.writeText(task);
       byId("queue-copy-status").textContent = "Task copied. Paste it into your driver conversation.";
     } catch {
       const text = byId("queue-task-text");
-      text.value = item.driver_task;
+      text.value = task;
       byId("queue-task-dialog").showModal();
       text.focus();
       text.select();
+    }
+  }
+  let agentConfigs = null;
+  let chosenItem = null;
+  let chosenAgents = [];
+  function renderAgentForm(agents) {
+    const body = byId("queue-agents-body");
+    body.replaceChildren();
+    const table = node("table", null, "sessions settings-table");
+    const head = document.createElement("tr");
+    for (const label of ["On", "Agent", "Role", "Persona", "Model"]) head.append(node("th", label));
+    const thead = document.createElement("thead");
+    thead.append(head);
+    const tbody = document.createElement("tbody");
+    for (const agent of agents) {
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.dataset.enabled = agent.name;
+      box.checked = agent.enabled !== false || agent.role === "curator";
+      box.disabled = agent.role === "curator";
+      if (agent.role === "curator") box.title = "The curator is required";
+      box.setAttribute("aria-label", `Enable ${agent.name}`);
+      const on = document.createElement("td");
+      on.append(box);
+      const input = document.createElement("input");
+      input.className = "mono settings-model";
+      input.setAttribute("list", "queue-model-options");
+      input.dataset.model = agent.name;
+      input.value = agent.model || "";
+      input.setAttribute("aria-label", `${agent.name} model`);
+      const model = document.createElement("td");
+      model.append(input);
+      const row = document.createElement("tr");
+      row.append(on, node("td", agent.name, "agent-name"), node("td", agent.role || "reviewer"), node("td", agent.persona || "—", "mono"), model);
+      tbody.append(row);
+    }
+    table.append(thead, tbody);
+    body.append(table);
+  }
+  async function loadModelOptions() {
+    const list = byId("queue-model-options");
+    if (list.childElementCount) return;
+    try {
+      const response = await fetch(`${base}/api/models`, { cache: "no-store" });
+      const payload = await response.json();
+      for (const model of payload.models || []) {
+        const option = document.createElement("option");
+        option.value = model.id;
+        option.textContent = model.label || "";
+        list.append(option);
+      }
+    } catch { /* a typed model id still works */ }
+  }
+  async function openAgents(item) {
+    chosenItem = item;
+    const status = byId("queue-agents-status");
+    status.textContent = "Loading agents…";
+    status.classList.remove("error");
+    byId("queue-agents-body").replaceChildren();
+    byId("queue-agents-copy").disabled = true;
+    byId("queue-agents-dialog").showModal();
+    try {
+      if (!agentConfigs) {
+        const response = await fetch(`${base}/api/settings`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`Could not load agents (${response.status})`);
+        agentConfigs = (await response.json()).configs || [];
+      }
+      await loadModelOptions();
+      const config = agentConfigs.find((entry) => entry.path === item.review_config);
+      if (!config) throw new Error("No review config for this pull request.");
+      if (config.error) throw new Error(config.error);
+      chosenAgents = config.agents;
+      renderAgentForm(config.agents);
+      byId("queue-agents-copy").disabled = false;
+      status.textContent = "";
+    } catch (err) {
+      status.textContent = err.message;
+      status.classList.add("error");
+    }
+  }
+  async function copyChosen() {
+    const status = byId("queue-agents-status");
+    const button = byId("queue-agents-copy");
+    const root = byId("queue-agents-body");
+    const agents = chosenAgents.map((agent) => {
+      const enabled = root.querySelector(`[data-enabled="${CSS.escape(agent.name)}"]`).checked;
+      const model = root.querySelector(`[data-model="${CSS.escape(agent.name)}"]`).value.trim();
+      return model ? { name: agent.name, enabled, model } : { name: agent.name, enabled };
+    });
+    button.disabled = true;
+    status.classList.remove("error");
+    status.textContent = "Copying…";
+    try {
+      const response = await fetch(`${base}/api/queue/task`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Peanut-Queue-Token": window.PR_QUEUE_TOKEN },
+        body: JSON.stringify({ key: chosenItem.key, agents }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `Could not build the task (${response.status})`);
+      byId("queue-agents-dialog").close();
+      await copyText(result.task);
+    } catch (err) {
+      status.textContent = err.message;
+      status.classList.add("error");
+      button.disabled = false;
     }
   }
   function reviewedHead(item) {
@@ -222,11 +328,18 @@
         actions.append(open);
       }
       if (!item.state || item.state === "open") {
+        const choose = node("button", "Choose agents");
+        choose.type = "button";
+        choose.disabled = !item.review_config || !item.driver_task;
+        choose.title = item.review_config
+          ? "Enable or disable personas and choose their models, then copy the task"
+          : "No review config for this pull request";
+        choose.addEventListener("click", () => openAgents(item));
         const copy = node("button", item.session_id ? "Copy re-review task" : "Copy review task");
         copy.type = "button";
         copy.disabled = !item.driver_task;
-        copy.addEventListener("click", () => copyTask(item));
-        actions.append(copy);
+        copy.addEventListener("click", () => copyText(item.driver_task));
+        actions.append(choose, copy);
       }
       row.append(pr, identity, review, freshness, actions);
       body.append(row);
@@ -262,6 +375,8 @@
   }
   byId("queue-refresh").addEventListener("click", () => action("refresh"));
   byId("queue-task-close").addEventListener("click", () => byId("queue-task-dialog").close());
+  byId("queue-agents-cancel").addEventListener("click", () => byId("queue-agents-dialog").close());
+  byId("queue-agents-copy").addEventListener("click", () => copyChosen());
   byId("queue-search").addEventListener("input", render);
   byId("queue-account").addEventListener("change", render);
   byId("queue-request-type").addEventListener("change", render);

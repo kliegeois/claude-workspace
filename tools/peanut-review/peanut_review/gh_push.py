@@ -487,17 +487,6 @@ def _replies_described_by_review(
     ]
 
 
-def _review_event(global_comments: list[models.Comment]) -> str:
-    categories = {
-        models.normalize_comment_category(c.category) for c in global_comments
-    }
-    if models.CommentCategory.REQUEST_CHANGES.value in categories:
-        return "REQUEST_CHANGES"
-    if models.CommentCategory.APPROVE.value in categories:
-        return "APPROVE"
-    return "COMMENT"
-
-
 def _payload_signature(payload: dict) -> tuple[str, int, int, str]:
     line = int(payload.get("line") or 0)
     start_line = int(payload.get("start_line") or 0)
@@ -602,9 +591,8 @@ def _execute_push(
     inline_top = [c for c in plan.new_top if c.file != sess.GLOBAL_FILE]
     global_top = [c for c in plan.new_top if c.file == sess.GLOBAL_FILE]
     review_body = _review_body(global_top)
-    review_event = _review_event(global_top)
     inline_payloads = [_review_comment_payload(c) for c in inline_top]
-    if review_event == "COMMENT" and not review_body:
+    if not review_body:
         review_body = _default_review_body(
             inline_top, _replies_described_by_review(plan, inline_top),
         )
@@ -615,7 +603,7 @@ def _execute_push(
         try:
             resp = gh.post_pr_review(
                 ghpr.repo, ghpr.number,
-                event=review_event,
+                event="COMMENT",
                 body=review_body,
                 commit_id=session.current_head if inline_payloads else None,
                 comments=inline_payloads or None,

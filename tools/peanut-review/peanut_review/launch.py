@@ -184,11 +184,12 @@ def _resolve_template(user_template: str | Path | None, agent) -> str:
     """
     if user_template:
         return str(user_template)
-    template_name = (
-        "curator-prompt.md"
-        if curator.is_curator(agent)
-        else "agent-prompt.md"
-    )
+    if curator.is_curator(agent):
+        template_name = "curator-prompt.md"
+    elif curator.is_editor(agent):
+        template_name = "editor-prompt.md"
+    else:
+        template_name = "agent-prompt.md"
     default = Path(__file__).resolve().parent / "templates" / template_name
     if default.exists():
         return str(default)
@@ -202,6 +203,7 @@ def render_all_prompts(
     template_path: str | Path | None = None,
     agent_names: Sequence[str] | None = None,
     remote_launch_ids: dict[str, str] | None = None,
+    workspace_override: str | None = None,
 ) -> dict[str, Path]:
     """Render per-agent prompts and write to <session>/prompts/. Returns {agent: path}.
 
@@ -263,22 +265,25 @@ def render_all_prompts(
         else:
             agent_session = str(sdir)
             scratch_dir = sdir / "tmp" / ("curator" if curator.is_curator(agent) else agent.name)
-            agent_workspace = session.workspace
-            agent_repo = repo
+            agent_workspace = workspace_override or session.workspace
+            agent_repo = workspace_override or repo
             agent_pr_bin = pr_bin
             persona_path = str(sdir / "personas" / agent.persona)
             workspace_layout = _format_workspace_layout(
-                session.workspace,
-                repo,
-                session.repo_relative or ".",
+                agent_workspace,
+                agent_repo,
+                "." if workspace_override else session.repo_relative or ".",
             )
-            workspace_artifacts = _format_workspace_artifacts(session.workspace)
+            workspace_artifacts = _format_workspace_artifacts(agent_workspace)
         variables = {
             "SESSION": shlex.quote(agent_session),
             "SCRATCH_DIR": shlex.quote(str(scratch_dir)),
             "WORKSPACE": agent_workspace,
             "REPO_PATH": shlex.quote(agent_repo),
-            "REPO_RELATIVE": target.repo_relative if agent.ssh_target else session.repo_relative or ".",
+            "REPO_RELATIVE": (
+                target.repo_relative if agent.ssh_target
+                else "." if workspace_override else session.repo_relative or "."
+            ),
             "WORKSPACE_LAYOUT": workspace_layout,
             "WORKSPACE_ARTIFACTS": workspace_artifacts,
             "AGENT": agent.name,
@@ -378,6 +383,13 @@ def _select_agents(agents, agent_names: Sequence[str] | None):
         )
 
     requested_set = set(requested)
+    disabled = [agent.name for agent in agents
+                if agent.name in requested_set and not curator.is_enabled(agent)]
+    if disabled:
+        raise ValueError(
+            f"disabled agent(s): {', '.join(disabled)}; enable them in the "
+            "session's agent settings first"
+        )
     return [agent for agent in agents if agent.name in requested_set]
 
 
@@ -416,7 +428,7 @@ def _clear_curator_auto_launch_markers(session_dir: Path, agents) -> None:
 
 
 def _prepare_curation_baseline(session_dir: Path, session, agents) -> None:
-    if not agents or any(curator.is_curator(agent) for agent in agents):
+    if not agents or any(curator.is_curator(agent) or curator.is_editor(agent) for agent in agents):
         return
     session.curation_since_comment_id = _latest_comment_id(session_dir)
     curators = curator.curators(session.agents)
@@ -461,6 +473,7 @@ def _build_agent_cmd(
     session,
     session_dir: Path,
     prompt_path: Path,
+    workspace: str | None = None,
 ) -> list[str]:
     """Build the launcher command for a single agent based on its runner."""
     if agent.ssh_target:
@@ -469,7 +482,7 @@ def _build_agent_cmd(
     cmd = [
         launcher,
         "--model", agent.model,
-        "--workspace", session.workspace,
+        "--workspace", workspace or session.workspace,
         "--output-dir", str(session_dir / "log"),
         "--name", agent.name,
         "--timeout", str(session.timeout),
@@ -490,6 +503,8 @@ def _build_agent_cmd(
         cmd.append("--fast-mode" if agent.fast_mode is True else "--no-fast-mode")
     elif agent.runner == "copilot" and agent.reasoning_effort:
         cmd += ["--reasoning-effort", agent.reasoning_effort]
+    elif agent.runner == "cursor" and curator.is_editor(agent):
+        cmd.append("--allowlist-only")
     return cmd
 
 
@@ -542,16 +557,22 @@ def launch_agents(
     dry_run: bool = False,
     cli_json: str | None = None,
     agent_names: Sequence[str] | None = None,
+    workspace_override: str | None = None,
 ) -> list[dict]:
     """Spawn selected agents from the session, dispatching by agent.runner.
 
-    Returns list of {name, pid, cmd} dicts.
+    `workspace_override` runs the selected local agents in another checkout;
+    the Editor uses it so its write access never reaches the reviewers'
+    workspace. Returns list of {name, pid, cmd} dicts.
     """
     # Prompts and subprocess arguments must remain valid in the runner workspace.
     sdir = Path(session_dir).resolve()
     session = load_session(sdir)
     agents = _select_agents(session.agents, agent_names)
     remote_agents = [agent for agent in agents if agent.ssh_target]
+    if workspace_override and remote_agents:
+        raise ValueError("a workspace override applies to local agents only")
+    workspace = workspace_override or session.workspace
     for agent in remote_agents:
         if agent.ssh_target not in session.ssh_targets:
             raise ValueError(
@@ -575,7 +596,7 @@ def launch_agents(
             )
 
     validate_launch_prerequisites(
-        workspace=session.workspace,
+        workspace=workspace,
         agents=agents,
         cli_json=cli_json,
     )
@@ -598,6 +619,7 @@ def launch_agents(
         template_path,
         agent_names=agent_names,
         remote_launch_ids=remote_launch_ids,
+        workspace_override=workspace_override,
     )
 
     if not dry_run:
@@ -618,13 +640,14 @@ def launch_agents(
             )
         else:
             cmd = _build_agent_cmd(
-                agent, session=session, session_dir=sdir, prompt_path=prompt_path
+                agent, session=session, session_dir=sdir, prompt_path=prompt_path,
+                workspace=workspace,
             )
         supervisor_cmd = _build_supervisor_cmd(
             session_dir=sdir,
             agent_name=agent.name,
             timeout=session.timeout,
-            workspace=session.workspace,
+            workspace=workspace,
             wrapper_cmd=cmd,
         )
 
@@ -695,7 +718,7 @@ def launch_agents(
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
                     env=env,
-                    cwd=session.workspace,
+                    cwd=workspace,
                     start_new_session=True,
                 )
         except OSError:
@@ -744,6 +767,7 @@ def rerun_agents(
     template_path: str | Path | None = None,
     dry_run: bool = False,
     cli_json: str | None = None,
+    workspace_override: str | None = None,
 ) -> list[dict]:
     """Reset selected agents' round state and launch them again."""
     session = load_session(session_dir)
@@ -761,6 +785,7 @@ def rerun_agents(
         dry_run=dry_run,
         cli_json=cli_json,
         agent_names=selected_names,
+        workspace_override=workspace_override,
     )
 
 

@@ -658,4 +658,36 @@ def test_driver_task_contains_account_config_and_exact_context(queue):
     assert context["observed_head"] == remote()["head_sha"]
     assert context["worktree_root"].endswith("worktrees/acme/widget")
     assert "force pushes" in task and "Do not publish" in task
+    assert "configured lineup" in task
+    assert "agents" not in context
     assert "The requested change" not in task  # PR bodies are not driver instructions.
+
+
+def test_task_with_agents_embeds_lineup_without_writing_config(queue, tmp_path):
+    path = Path(queue.config["accounts"][0]["reviewConfig"])
+    saved = {"agents": [
+        {"name": "Vera", "model": "m1", "persona": "vera.md", "runner": "cursor"},
+        {"name": "Irene", "model": "m1", "persona": "irene.md", "runner": "cursor"},
+        {"name": "Curator", "model": "m1", "runner": "cursor", "role": "curator"},
+    ]}
+    path.write_text(json.dumps(saved))
+    key = add_item(queue)
+    with pytest.raises(ValueError, match="at least one reviewer"):
+        queue.task_with_agents(key, [
+            {"name": "Vera", "enabled": False}, {"name": "Irene", "enabled": False},
+        ])
+    task = queue.task_with_agents(key, [
+        {"name": "Vera", "enabled": False}, {"name": "Irene", "enabled": True, "model": "m2"},
+    ])
+    context = json.loads(task.split("Context (JSON data):\n", 1)[1])
+    by_name = {agent["name"]: agent for agent in context["agents"]}
+    assert by_name["Vera"]["enabled"] is False and by_name["Vera"]["persona"] == "vera.md"
+    assert by_name["Irene"]["model"] == "m2" and "enabled" not in by_name["Irene"]
+    assert "Do not edit the project review config" in task
+    assert "pass that list to peanut-review with --agents" in task
+    assert json.loads(path.read_text()) == saved
+    assert item_review_config(queue) == str(path)
+
+
+def item_review_config(queue):
+    return queue.payload()["items"][0]["review_config"]

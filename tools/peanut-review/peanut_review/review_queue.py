@@ -515,7 +515,40 @@ class ReviewQueue:
     def refresh_async(self) -> None:
         self.wakeup.set()
 
-    def driver_task(self, item: dict, directory: Path | None, session) -> str:
+    def _open_session(self, item: dict):
+        """Return the session bound to this queue item when it still matches the PR."""
+        session_id = item.get("session_id")
+        if not session_id:
+            return None, None
+        directory = self.registry.get(session_id)
+        if directory is None:
+            return None, None
+        try:
+            session = sess.load_session(directory)
+            expected = {"account": item["account"], "repo": item["repo"].casefold(), "number": item["number"]}
+            if review_completion.target(session) != expected:
+                raise ValueError("Session target does not match this queue item")
+        except (OSError, ValueError, AttributeError):
+            return None, None
+        return directory, session
+
+    def task_with_agents(self, key: str, updates) -> str:
+        """Build a copy task whose lineup overrides the project config for this review only."""
+        if not isinstance(key, str):
+            raise KeyError(key)
+        with self.lock:
+            item = copy.deepcopy(self.state["items"].get(key))
+        if not item:
+            raise KeyError(key)
+        path = self.repository_config(item).get("reviewConfig")
+        if not path:
+            raise ValueError("no review config for this pull request")
+        from .web.agent_settings import apply_updates, read_config
+        agents = apply_updates(read_config(Path(path))["agents"], updates)
+        directory, session = self._open_session(item)
+        return self.driver_task(item, directory, session, agents)
+
+    def driver_task(self, item: dict, directory: Path | None, session, agents: list | None = None) -> str:
         settings = self.repository_config(item)
         context = {
             "pr_url": f'https://{item["account"]["hostname"]}/{item["repo"]}/pull/{item["number"]}',
@@ -532,6 +565,18 @@ class ReviewQueue:
             "base_branch": item.get("base_ref"),
             "prepare_commands": settings.get("prepare", []),
         }
+        if agents is not None:
+            context["agents"] = agents
+        if agents is not None:
+            lineup = (
+                "Use the agents list in the context for this review, including each agent's enabled flag and model. "
+                "Do not edit the project review config. For a new session, pass that list to peanut-review with --agents. "
+                "For an existing session, set those agents' enabled flags and models to match the list before launching. "
+            )
+            run = "Run the enabled reviewers from the agents list and then its curator, "
+        else:
+            lineup = "Reuse its saved reviewer/curator lineup, or use the configured lineup for a new session. "
+            run = "Run reviewers and then the configured curator, "
         action = "Refresh and re-review" if session else "Review"
         return (
             f"{action} {item['repo']}#{item['number']} using the peanut-review skill as the driver.\n\n"
@@ -544,7 +589,7 @@ class ReviewQueue:
             "create another. Create a worktree only when no suitable existing PR worktree exists "
             "or the user explicitly requests a separate one. If another task or live agent owns "
             "the checkout, wait or report the conflict before changing it. "
-            "Reuse its saved reviewer/curator lineup, or use the configured lineup for a new session. "
+            + lineup +
             "Preserve local edits, commits, build artifacts, and prior review history. Before moving "
             "a divergent branch, save its old HEAD on a named local backup branch. Save any local "
             "edits with a recorded stash or other recoverable backup, and protect untracked or ignored "
@@ -555,7 +600,7 @@ class ReviewQueue:
             "edits separate from the exact PR snapshot during review and report recovery references. "
             "Follow project build/test instructions before launching through peanut-review. Verify "
             "checkout HEAD matches the latest PR head, then sync-pr the existing session, or "
-            "create one under the specified session root. Run reviewers and then the configured curator, "
+            "create one under the specified session root. " + run +
             "monitor failures, and finish with gh-push --dry-run and a summary. "
             "Do not publish to GitHub. Discover missing configuration before proceeding.\n\n"
             "Context (JSON data):\n" + json.dumps(context, indent=2) + "\n"
@@ -630,6 +675,7 @@ class ReviewQueue:
                     and review_completion.incomplete_review(directory, session)):
                 item["freshness"] = "incomplete"
                 item["completion_detail"] = "Review started, but successful completion is not recorded."
+            item["review_config"] = self.repository_config(item).get("reviewConfig") if item.get("repo") and item.get("account") else None
             item["driver_task"] = self.driver_task(item, directory, session)
             rows.append(item)
         rows.sort(key=lambda item: (item.get("state") != "open", item["freshness"] != "stale", not item.get("requested"), item.get("repo", ""), item["number"]))

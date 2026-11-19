@@ -69,6 +69,8 @@ class AgentStatus(str, Enum):
 class AgentRole(str, Enum):
     REVIEWER = "reviewer"
     CURATOR = "curator"
+    # Edits the local worktree between automatic review rounds.
+    EDITOR = "editor"
 
 
 @dataclass
@@ -228,6 +230,8 @@ class AgentConfig:
     fast_mode: bool | None = None
     persona: str = ""
     role: str = AgentRole.REVIEWER.value
+    # A disabled agent stays in the lineup but is never launched or awaited.
+    enabled: bool = True
     status: str = AgentStatus.PENDING.value
     # Runtime identity. `pid` is the top-level reviewer process PID after the
     # runner wrapper has exec'd the real agent command. `pgid` is the process
@@ -255,6 +259,7 @@ class AgentConfig:
                 for k, v in d.items()
                 if v is not None
                 and not (k == "role" and v == AgentRole.REVIEWER.value)
+                and not (k == "enabled" and v is True)
             }
             | ({"reasoningEffort": reasoning_effort} if reasoning_effort else {})
             | ({"fastMode": fast_mode} if fast_mode is not None else {})

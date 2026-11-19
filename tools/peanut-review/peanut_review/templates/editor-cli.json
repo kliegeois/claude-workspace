@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Write(**)",
+      "Grep(**)",
+      "LS(**)",
+      "SemanticSearch(**)"
+    ],
+    "deny": [
+      "Delete(**)",
+      "Write(.cursor/**)",
+      "Write(.git/**)"
+    ]
+  }
+}
