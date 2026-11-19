@@ -661,8 +661,11 @@ origin show **No known request** and remain visible under **All request types**.
 The separate **Review requested** status filter still selects pending requests.
 **Hide PRs I approved**, **Hide drafts**, **Hide stale**, **Hide my PRs**
 (on by default; hides PRs authored by the queue's account), and the
-**Repositories** selection are remembered in the browser; selecting no
-repository shows all of them. A PR
+**Repositories** and **Labels** selections are remembered in the browser.
+Selecting no repository or label shows all of them; a PR matches when it has
+any selected label. Labels default to `project: hipsparse`,
+`project: rocalution`, and `project: rocsparse`, so PRs without those labels,
+including other repositories, stay hidden until you change the selection. A PR
 counts as approved when your latest approving or change-requesting review is an
 approval and you have not been directly re-requested since.
 History or membership lookup

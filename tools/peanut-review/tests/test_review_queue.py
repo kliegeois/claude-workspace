@@ -133,6 +133,9 @@ def test_fetch_validates_target_and_request_kind(monkeypatch):
     monkeypatch.setattr(gh, "current_account", lambda: ACCOUNT)
     monkeypatch.setattr(gh, "_api", lambda endpoint: json.dumps(data))
     assert review_queue.fetch_pr("acme/widget", 1)["request_kind"] == "direct"
+    assert review_queue.fetch_pr("acme/widget", 1)["labels"] == []
+    data["labels"] = [{"name": "project: rocsparse"}, {"name": "ci: skip"}]
+    assert review_queue.fetch_pr("acme/widget", 1)["labels"] == ["ci: skip", "project: rocsparse"]
     data["requested_reviewers"] = []
     data["requested_teams"] = [{"id": 101}]
     result = review_queue.fetch_pr("acme/widget", 1)

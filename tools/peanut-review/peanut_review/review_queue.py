@@ -137,6 +137,7 @@ def fetch_pr(repo: str, number: int) -> dict:
         "repo": returned_repo, "number": number, "url": data["html_url"],
         "title": data["title"], "body": data.get("body") or "",
         "author": data["user"]["login"], "draft": bool(data.get("draft")),
+        "labels": sorted(label["name"] for label in data.get("labels", [])),
         "state": "merged" if data.get("merged") else data["state"],
         "head_sha": head["sha"], "head_ref": head["ref"],
         "base_sha": base["sha"], "base_ref": base["ref"],
