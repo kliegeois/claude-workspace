@@ -13,11 +13,19 @@ def _field(agent: Any, name: str, default: str) -> str:
     return str(value or default)
 
 
+def _enabled(agent: Any) -> bool:
+    value = agent.get("enabled", True) if isinstance(agent, Mapping) else getattr(agent, "enabled", True)
+    return value is not False
+
+
 def summarize_agent_progress(agents: Iterable[Any]) -> dict[str, str]:
     """Summarize the current reviewer/Curator activity for display."""
-    items = list(agents)
-    reviewers = [a for a in items if _field(a, "role", "reviewer") != "curator"]
+    items = [a for a in agents if _enabled(a)]
+    reviewers = [a for a in items if _field(a, "role", "reviewer") not in {"curator", "editor"}]
     curators = [a for a in items if _field(a, "role", "reviewer") == "curator"]
+    editors = [a for a in items if _field(a, "role", "reviewer") == "editor"]
+    if any(_field(a, "status", "pending") == "running" for a in editors):
+        return {"label": "editor running", "status": "running"}
 
     reviewer_statuses = [_field(a, "status", "pending") for a in reviewers]
     running = reviewer_statuses.count("running")

@@ -1437,3 +1437,35 @@ table.sessions td.session-actions { text-align: right; white-space: nowrap; }
 .session-pr-check:disabled { opacity: 0.5; cursor: default; }
 tr.safe-to-delete .session-delete { border-color: var(--success-border-strong); }
 .gh-push-note { margin: 0 16px; font-size: 12px; color: var(--muted); }
+
+/* Local review form, Settings tab, per-session agent settings */
+.local-new {
+  margin: 0 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.local-new summary { cursor: pointer; font-weight: 600; }
+.local-new-form { display: grid; gap: 8px; margin-top: 10px; max-width: 760px; }
+.local-new-form label { display: grid; grid-template-columns: 140px 1fr; align-items: center; gap: 8px; }
+.local-new-form fieldset { border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px; }
+.local-new-form .sub, #agent-config-dialog .sub { color: var(--muted); font-size: 12px; margin: 0; }
+.local-agent { display: flex !important; align-items: center; gap: 8px; padding: 2px 0; }
+.local-agent .agent-name { min-width: 120px; }
+.local-agent-model, .settings-model { min-width: 260px; }
+.settings-config { margin: 0 0 24px; }
+.settings-config h3 { font-size: 13px; margin: 12px 0 6px; }
+.settings-table td, .settings-table th { padding: 4px 8px; }
+.settings-actions { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.settings-status { color: var(--muted); font-size: 12px; }
+.agent-row.agent-disabled .agent-name { color: var(--muted); text-decoration: line-through; }
+.agent-off {
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+#agent-config-dialog { min-width: 560px; }
+#agent-config-body { margin: 10px 0; }

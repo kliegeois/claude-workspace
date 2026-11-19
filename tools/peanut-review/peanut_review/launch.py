@@ -378,6 +378,13 @@ def _select_agents(agents, agent_names: Sequence[str] | None):
         )
 
     requested_set = set(requested)
+    disabled = [agent.name for agent in agents
+                if agent.name in requested_set and not curator.is_enabled(agent)]
+    if disabled:
+        raise ValueError(
+            f"disabled agent(s): {', '.join(disabled)}; enable them in the "
+            "session's agent settings first"
+        )
     return [agent for agent in agents if agent.name in requested_set]
 
 

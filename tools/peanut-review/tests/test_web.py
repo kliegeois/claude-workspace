@@ -1154,7 +1154,7 @@ def _mark_github_backed(session_dir: Path) -> None:
 def test_server_root_renders_index(session_dir: Path):
     srv, session_id, port = _start_server(session_dir)
     try:
-        code, body = _get(f"http://127.0.0.1:{port}/")
+        code, body = _get(f"http://127.0.0.1:{port}/local")
         assert code == 200
         text = body.decode("utf-8")
         assert "<!doctype html>" in text
@@ -2031,11 +2031,20 @@ def test_index_and_api_sessions_list_all(tmp_path: Path, repo: Path):
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     try:
-        code, body = _get(f"http://127.0.0.1:{port}/")
+        code, body = _get(f"http://127.0.0.1:{port}/local")
         assert code == 200
         text = body.decode("utf-8")
         assert f'href="/{s1.id}"' in text
         assert f'href="/{s2.id}"' in text
+
+        code, body = _get(f"http://127.0.0.1:{port}/")
+        assert code == 200
+        assert f'href="/{s1.id}"' not in body.decode("utf-8")
+
+        code, raw = _get(f"http://127.0.0.1:{port}/api/sessions?kind=github")
+        assert json.loads(raw)["total"] == 0
+        code, raw = _get(f"http://127.0.0.1:{port}/api/sessions?kind=local")
+        assert json.loads(raw)["total"] == 2
 
         code, raw = _get(f"http://127.0.0.1:{port}/api/sessions")
         assert code == 200
@@ -2128,7 +2137,7 @@ def test_index_empty_state(tmp_path: Path):
     try:
         code, body = _get(f"http://127.0.0.1:{port}/")
         assert code == 200
-        assert b"No review sessions found" in body
+        assert b"No PR reviews found" in body
     finally:
         srv.shutdown()
 
@@ -2218,7 +2227,7 @@ def test_index_emits_prefixed_hrefs_and_base_url_global(tmp_path: Path, repo: Pa
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     try:
-        code, body = _get(f"http://127.0.0.1:{port}/")
+        code, body = _get(f"http://127.0.0.1:{port}/local")
         assert code == 200
         text = body.decode("utf-8")
         # Server-rendered link carries the prefix.

@@ -1582,7 +1582,8 @@
   }
 
   function isReviewerAgent(agent) {
-    return String(agent.role || "reviewer") !== "curator";
+    const role = String(agent.role || "reviewer");
+    return role !== "curator" && role !== "editor" && agent.enabled !== false;
   }
 
   function renderAgentRow(agent) {
@@ -1603,10 +1604,12 @@
     const killButton = agentCanKill(agent)
       ? `<button type="button" class="agent-kill" data-agent-kill="${attrEsc(name)}" title="Stop ${attrEsc(name)}">kill</button>`
       : "";
-    return `<li class="agent-row" data-agent="${attrEsc(name)}">`
+    const disabled = agent.enabled === false;
+    return `<li class="agent-row${disabled ? " agent-disabled" : ""}" data-agent="${attrEsc(name)}">`
       + `<div class="agent-main">`
       + `<span class="agent-ident">`
       + `<span class="agent-name">${esc(name)}</span>`
+      + (disabled ? `<span class="agent-off">off</span>` : "")
       + `<span class="agent-model mono" title="${attrEsc(model)}">${esc(model)}</span>`
       + `</span>`
       + `<span class="agent-controls">`
@@ -1618,7 +1621,10 @@
       + `</li>`;
   }
 
+  let lastAgents = [];
+
   function updateAgentList(agents) {
+    lastAgents = agents;
     const list = document.getElementById("agent-list");
     if (list) {
       list.innerHTML = agents.length
@@ -1639,9 +1645,16 @@
         ? "Wait for live reviewer agents to finish before rerunning"
         : "Rerun all reviewer agents";
     }
+    const configBtn = document.getElementById("agent-config-btn");
+    if (configBtn) {
+      configBtn.disabled = agents.some(agentCanKill);
+      configBtn.title = configBtn.disabled
+        ? "Wait for running agents to finish before changing the lineup"
+        : "Enable or disable agents and choose their models for this session";
+    }
     const curatorRun = document.getElementById("curator-run-btn");
     if (curatorRun) {
-      const curator = agents.find((agent) => !isReviewerAgent(agent));
+      const curator = agents.find((agent) => String(agent.role || "") === "curator");
       curatorRun.disabled = curator ? agentCanKill(curator) : false;
       curatorRun.title = curatorRun.disabled
         ? "Wait for the live curator to finish before rerunning"
@@ -1718,6 +1731,55 @@
   if (rerunAllAgentsBtn) {
     rerunAllAgentsBtn.addEventListener("click", rerunAllAgents);
   }
+
+  const agentConfigDialog = document.getElementById("agent-config-dialog");
+  const agentConfigBody = document.getElementById("agent-config-body");
+  const agentConfigError = document.getElementById("agent-config-error");
+
+  async function openAgentConfig() {
+    if (!agentConfigDialog) return;
+    agentConfigError.hidden = true;
+    const agents = lastAgents.length ? lastAgents : [];
+    agentConfigBody.innerHTML = agents.map((a) => `<label class="local-agent">`
+      + `<input type="checkbox" data-agent="${attrEsc(a.name)}"${a.enabled === false ? "" : " checked"}> `
+      + `<span class="agent-name">${esc(a.name)}</span> <span class="sub">${esc(a.role || "reviewer")}${a.persona ? " · " + esc(a.persona) : ""}</span> `
+      + `<input class="mono local-agent-model" list="agent-model-options" data-model="${attrEsc(a.name)}" value="${attrEsc(a.model || "")}" aria-label="${attrEsc(a.name)} model">`
+      + `</label>`).join("") || "<p>(no agents)</p>";
+    agentConfigDialog.showModal();
+    try {
+      const r = await fetch(`${window.PR_BASE_URL || ""}/api/models`, { cache: "no-store" });
+      const data = await r.json();
+      document.getElementById("agent-model-options").innerHTML = (data.models || [])
+        .map((m) => `<option value="${attrEsc(m.id)}">${esc(m.label)}</option>`).join("");
+    } catch { /* free text still works */ }
+  }
+
+  async function saveAgentConfig() {
+    const updates = Array.from(agentConfigBody.querySelectorAll("input[data-agent]")).map((box) => ({
+      name: box.dataset.agent,
+      enabled: box.checked,
+      model: agentConfigBody.querySelector(`input[data-model="${CSS.escape(box.dataset.agent)}"]`).value.trim(),
+    }));
+    try {
+      const res = await fetch(`${sessionUrl}/api/agents/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Peanut-Queue-Token": window.PR_ACTION_TOKEN || "" },
+        body: JSON.stringify({ agents: updates }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Save failed (${res.status})`);
+      updateAgentList(data.agents || []);
+      agentConfigDialog.close();
+      flashToast("Agent settings saved");
+    } catch (e) {
+      agentConfigError.textContent = e.message;
+      agentConfigError.hidden = false;
+    }
+  }
+
+  document.getElementById("agent-config-btn")?.addEventListener("click", openAgentConfig);
+  document.getElementById("agent-config-cancel")?.addEventListener("click", () => agentConfigDialog.close());
+  document.getElementById("agent-config-save")?.addEventListener("click", saveAgentConfig);
 
   async function launchCurator() {
     const btn = document.getElementById("curator-run-btn");

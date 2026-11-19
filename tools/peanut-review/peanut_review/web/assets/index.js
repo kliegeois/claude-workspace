@@ -2,6 +2,7 @@
 
 (function () {
   const BASE = (typeof window.PR_BASE_URL === "string") ? window.PR_BASE_URL : "";
+  const SESSION_KIND = (typeof window.PR_SESSION_KIND === "string") ? window.PR_SESSION_KIND : "";
   const THEME_KEY = "pr.theme";
   const THEMES = [
     { value: "system", label: "system" },
@@ -304,6 +305,7 @@
       limit: String(PAGE_SIZE),
       offset: String(offset),
     });
+    if (SESSION_KIND) params.set("kind", SESSION_KIND);
     if (activeQuery) params.set("q", activeQuery);
     const url = BASE + "/api/sessions?" + params.toString();
     const headers = {};
@@ -366,4 +368,97 @@
     sessionSearch.select();
   });
   setInterval(refresh, 15000);
+
+  // New local review form (Local reviews tab only).
+  const localForm = document.getElementById("local-new-form");
+  const localAgents = document.getElementById("local-new-agents");
+  const localError = document.getElementById("local-new-error");
+  let settingsConfigs = [];
+
+  function showLocalError(message) {
+    if (!localError) return;
+    localError.textContent = message || "";
+    localError.hidden = !message;
+  }
+
+  function renderLocalAgents() {
+    if (!localForm || !localAgents) return;
+    const path = localForm.elements.config.value;
+    const config = settingsConfigs.find((c) => c.path === path);
+    const agents = config ? config.agents : [];
+    if (!agents.length) {
+      localAgents.innerHTML = `<legend>Agents</legend><p class="sub">${esc(config && config.error ? config.error : "No agents configured.")}</p>`;
+      return;
+    }
+    const rows = agents.map((a) => `<label class="local-agent">`
+      + `<input type="checkbox" data-agent="${attrEsc(a.name)}"${a.enabled ? " checked" : ""}> `
+      + `<span class="agent-name">${esc(a.name)}</span> <span class="sub">${esc(a.role)}${a.persona ? " · " + esc(a.persona) : ""}</span> `
+      + `<input class="mono local-agent-model" list="local-model-options" data-model="${attrEsc(a.name)}" value="${attrEsc(a.model)}" aria-label="${attrEsc(a.name)} model">`
+      + `</label>`).join("");
+    const hasEditor = agents.some((a) => a.role === "editor");
+    const editorNote = hasEditor ? "" : `<p class="sub warn">No Editor agent in this config: rounds will review only. Add one in Settings to enable edits.</p>`;
+    localAgents.innerHTML = `<legend>Agents</legend>${rows}${editorNote}<datalist id="local-model-options"></datalist>`;
+    loadModelOptions(document.getElementById("local-model-options"));
+  }
+
+  async function loadModelOptions(datalist) {
+    if (!datalist) return;
+    try {
+      const r = await fetch(`${BASE}/api/models`, { cache: "no-store" });
+      const data = await r.json();
+      datalist.innerHTML = (data.models || []).map((m) => `<option value="${attrEsc(m.id)}">${esc(m.label)}</option>`).join("");
+    } catch { /* free text still works */ }
+  }
+
+  async function loadLocalSettings() {
+    try {
+      const r = await fetch(`${BASE}/api/settings`, { cache: "no-store" });
+      const data = await r.json();
+      settingsConfigs = data.configs || [];
+    } catch (err) {
+      settingsConfigs = [];
+      showLocalError(`Cannot load agent settings: ${err.message}`);
+    }
+    renderLocalAgents();
+  }
+
+  async function startLocalReview(event) {
+    event.preventDefault();
+    showLocalError("");
+    const submit = document.getElementById("local-new-submit");
+    const agents = Array.from(localAgents.querySelectorAll("input[data-agent]")).map((box) => ({
+      name: box.dataset.agent,
+      enabled: box.checked,
+      model: (localAgents.querySelector(`input[data-model="${CSS.escape(box.dataset.agent)}"]`) || {}).value || "",
+    }));
+    const body = {
+      workspace: localForm.elements.workspace.value.trim(),
+      base: localForm.elements.base.value.trim(),
+      config: localForm.elements.config.value,
+      rounds: Number(localForm.elements.rounds.value || 0),
+      agents,
+    };
+    submit.disabled = true;
+    submit.textContent = "Starting…";
+    try {
+      const r = await fetch(`${BASE}/api/local/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Peanut-Queue-Token": window.PR_ACTION_TOKEN || "" },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `Start failed (${r.status})`);
+      window.location.href = `${BASE}/${encodeURIComponent(data.session_id)}`;
+    } catch (err) {
+      showLocalError(err.message);
+      submit.disabled = false;
+      submit.textContent = "Start review";
+    }
+  }
+
+  if (localForm) {
+    localForm.elements.config.addEventListener("change", renderLocalAgents);
+    localForm.addEventListener("submit", startLocalReview);
+    loadLocalSettings();
+  }
 })();

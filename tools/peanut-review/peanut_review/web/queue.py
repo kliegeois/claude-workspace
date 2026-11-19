@@ -4,7 +4,7 @@ from __future__ import annotations
 import html
 import json
 
-from .render import FAVICON_HREF, THEME_BOOTSTRAP, THEME_TOGGLE_BUTTON, _asset_url
+from .render import FAVICON_HREF, THEME_BOOTSTRAP, THEME_TOGGLE_BUTTON, _asset_url, render_app_nav
 
 
 def render_queue(base_url: str, token: str, enabled: bool) -> str:
@@ -20,7 +20,7 @@ def render_queue(base_url: str, token: str, enabled: bool) -> str:
 <body class="index queue-page">
 <header>
 <h1><a href="{base}/">🥜 peanut-review</a></h1>
-<nav class="app-nav" aria-label="Dashboard"><a href="{base}/queue" aria-current="page">Review queue</a><a href="{base}/">Sessions</a></nav>
+{render_app_nav(base_url, "queue")}
 <span class="spacer"></span>{THEME_TOGGLE_BUTTON}
 <button id="queue-refresh" type="button">Refresh queue</button>
 </header>

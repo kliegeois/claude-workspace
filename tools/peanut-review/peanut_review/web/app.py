@@ -34,10 +34,11 @@ from ..session import (
     validate_comment_location,
     workspace_head_mismatch,
 )
+from . import agent_settings
 from . import diff as diffmod
 from .progress import summarize_agent_progress
 from .push_activity import summarize_push_activity
-from .render import ASSETS_DIR, asset_version, render_index, render_page
+from .render import ASSETS_DIR, asset_version, render_index, render_page, render_settings
 
 
 DEFAULT_ROOT = Path("/tmp/peanut-review")
@@ -96,6 +97,7 @@ class SessionRegistry:
         self._roots: list[Path] = [Path(r) for r in roots]
         self._by_id: dict[str, Path] = {}
         self._search_index: dict[str, str] = {}
+        self._kinds: dict[str, str] = {}
         self._summary_cache: dict[str, tuple[tuple, dict]] = {}
         self._last_scan = 0.0
         self._lock = threading.RLock()
@@ -112,6 +114,7 @@ class SessionRegistry:
         s = load_session(sdir)
         self._by_id[s.id] = sdir
         self._search_index[s.id] = self._search_text(s)
+        self._kinds[s.id] = session_kind(s)
         return s.id
 
     @staticmethod
@@ -154,6 +157,7 @@ class SessionRegistry:
         new_search_index = {
             sid: self._search_index.get(sid, sid.lower()) for sid in new_by_id
         }
+        new_kinds = {sid: self._kinds.get(sid, "local") for sid in new_by_id}
         for root in self._roots:
             if not root.is_dir():
                 continue
@@ -168,9 +172,11 @@ class SessionRegistry:
                     continue
                 new_by_id[s.id] = sub
                 new_search_index[s.id] = self._search_text(s)
+                new_kinds[s.id] = session_kind(s)
         with self._lock:
             self._by_id = new_by_id
             self._search_index = new_search_index
+            self._kinds = new_kinds
             self._summary_cache = {
                 sid: cached for sid, cached in self._summary_cache.items()
                 if sid in new_by_id
@@ -274,18 +280,25 @@ class SessionRegistry:
         limit: int | None = None,
         offset: int = 0,
         query: str = "",
+        kind: str = "",
     ) -> list[dict]:
-        """Return newest-first summaries, materializing only the requested page."""
+        """Return newest-first summaries, materializing only the requested page.
+
+        `kind` is "github", "local", or empty for every session.
+        """
         if self._roots:
             self.rescan()
         query_lower = query.strip().lower()
         candidates: list[tuple[int, str, Path]] = []
         with self._lock:
             items = list(self._by_id.items())
+            kinds = dict(self._kinds)
         for sid, sdir in items:
             if query_lower and query_lower not in self._search_index.get(
                 sid, sid.lower(),
             ):
+                continue
+            if kind and kinds.get(sid, "local") != kind:
                 continue
             try:
                 updated_ns, _updated_at = _session_updated_at(sdir)
@@ -306,7 +319,7 @@ class SessionRegistry:
         return summaries
 
     def page_sessions(
-        self, *, limit: int = 50, offset: int = 0, query: str = "",
+        self, *, limit: int = 50, offset: int = 0, query: str = "", kind: str = "",
     ) -> dict:
         if self._roots:
             self.rescan()
@@ -314,11 +327,12 @@ class SessionRegistry:
         with self._lock:
             ids = [
                 sid for sid in self._by_id
-                if not query_lower
-                or query_lower in self._search_index.get(sid, sid.lower())
+                if (not query_lower
+                    or query_lower in self._search_index.get(sid, sid.lower()))
+                and (not kind or self._kinds.get(sid, "local") == kind)
             ]
         total = len(ids)
-        sessions = self.list_sessions(limit=limit, offset=offset, query=query)
+        sessions = self.list_sessions(limit=limit, offset=offset, query=query, kind=kind)
         return {
             "sessions": sessions,
             "total": total,
@@ -326,13 +340,19 @@ class SessionRegistry:
             "limit": limit,
             "has_more": max(0, offset) + len(sessions) < total,
             "query": query,
+            "kind": kind,
         }
 
 
+def session_kind(session: Session) -> str:
+    return "github" if session.github else "local"
+
+
+SESSION_KINDS = {"", "github", "local"}
 ROUTE_RE = re.compile(r"^/([^/]+)(/.*)?$")
 # Top-level path segments that are NOT session ids — reserved for future and
 # current global routes. Guards against a session-id slug called "api".
-RESERVED_ROOTS = {"api", "queue"}
+RESERVED_ROOTS = {"api", "queue", "local", "settings"}
 VALID_CATEGORIES = {c.value for c in CommentCategory}
 MAX_DIFF_FOLD_FETCH_LINES = 200
 DEFAULT_SESSION_PAGE_SIZE = 50
@@ -344,6 +364,7 @@ class _Handler(BaseHTTPRequestHandler):
     registry: SessionRegistry
     queue = None
     queue_token: str = ""
+    review_config: str | None = None
     # Path prefix the app is mounted under (e.g. "/pr"). Empty = root-mounted.
     # Caddy `handle_path /pr/*` strips the prefix before forwarding, so the
     # router never sees it — this string is only used when emitting URLs.
@@ -433,6 +454,7 @@ class _Handler(BaseHTTPRequestHandler):
             "app.js": "text/javascript; charset=utf-8",
             "index.js": "text/javascript; charset=utf-8",
             "queue.js": "text/javascript; charset=utf-8",
+            "settings.js": "text/javascript; charset=utf-8",
         }
         if name not in content_types:
             return self._error(404, f"unknown asset: {name}")
@@ -492,16 +514,27 @@ class _Handler(BaseHTTPRequestHandler):
         if url.path.startswith("/assets/"):
             self._serve_asset(url.path.removeprefix("/assets/"), url.query)
             return
-        if url.path in ("", "/"):
-            page = self.registry.page_sessions(limit=DEFAULT_SESSION_PAGE_SIZE)
+        if url.path in ("", "/", "/local"):
+            kind = "local" if url.path == "/local" else "github"
+            page = self.registry.page_sessions(limit=DEFAULT_SESSION_PAGE_SIZE, kind=kind)
             self._html(200, render_index(
                 page["sessions"], roots=[str(r) for r in self.registry.roots],
                 base_url=self.base_url,
                 total_sessions=page["total"],
                 has_more=page["has_more"],
                 action_token=self.queue_token,
+                kind=kind,
+                review_configs=[str(p) for p in self._review_configs()] if kind == "local" else [],
             ))
             return
+        if url.path.rstrip("/") == "/settings":
+            self._html(200, render_settings(self.base_url, self.queue_token))
+            return
+        if url.path == "/api/settings":
+            return self._get_settings()
+        if url.path == "/api/models":
+            refresh = parse_qs(url.query).get("refresh", ["0"])[0] == "1"
+            return self._json(200, {"models": agent_settings.list_models(refresh=refresh)})
         if url.path == "/api/sessions":
             q = parse_qs(url.query)
             try:
@@ -512,8 +545,11 @@ class _Handler(BaseHTTPRequestHandler):
             limit = max(1, min(MAX_SESSION_PAGE_SIZE, limit))
             offset = max(0, offset)
             query = q.get("q", [""])[0]
+            kind = q.get("kind", [""])[0]
+            if kind not in SESSION_KINDS:
+                return self._error(400, "kind must be github or local")
             page = self.registry.page_sessions(
-                limit=limit, offset=offset, query=query,
+                limit=limit, offset=offset, query=query, kind=kind,
             )
             page_digest = hashlib.blake2s(
                 json.dumps(page, sort_keys=True, separators=(",", ":")).encode(),
@@ -586,6 +622,7 @@ class _Handler(BaseHTTPRequestHandler):
                 base_url=self.base_url,
                 agent_runtime=agent_runtime,
                 poll_etags=poll_etags,
+                action_token=self.queue_token,
             )
             self._html(200, html_out)
             return
@@ -691,6 +728,11 @@ class _Handler(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         if url.path.startswith("/api/queue/"):
             return self._post_queue(url.path)
+        if url.path == "/api/settings/agents":
+            data = self._read_json()
+            if data is None:
+                return self._error(400, "invalid JSON body")
+            return self._post_settings_agents(data)
         m = ROUTE_RE.match(url.path)
         if not m or m.group(1) in RESERVED_ROOTS:
             self._error(404, f"no route for {url.path}")
@@ -741,6 +783,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if tail == "/api/agents/rerun":
             self._post_agents_rerun(session_dir)
+            return
+        if tail == "/api/agents/config":
+            self._post_session_agents(session_dir, data)
             return
         if tail == "/api/curator/launch":
             self._post_curator_launch(session_dir)
@@ -1155,6 +1200,48 @@ class _Handler(BaseHTTPRequestHandler):
             self.registry.rescan(force=True)
         self._json(200, result)
 
+    def _review_configs(self) -> list[Path]:
+        primary = self.registry.roots[0] if self.registry.roots else Path(".")
+        queue_config = getattr(self.queue, "config", None) if self.queue else None
+        return agent_settings.find_review_configs(primary, queue_config, self.review_config)
+
+    def _get_settings(self) -> None:
+        configs = []
+        for path in self._review_configs():
+            try:
+                agents = agent_settings.describe_agents(agent_settings.read_config(path)["agents"])
+                configs.append({"path": str(path), "agents": agents, "error": ""})
+            except agent_settings.SettingsError as exc:
+                configs.append({"path": str(path), "agents": [], "error": str(exc)})
+        self._json(200, {"configs": configs})
+
+    def _post_settings_agents(self, data: dict) -> None:
+        if not self._dashboard_action("Reload the settings page before saving"):
+            return
+        allowed = {str(p) for p in self._review_configs()}
+        path = data.get("config")
+        if path not in allowed:
+            return self._error(400, "unknown review config")
+        try:
+            agents = agent_settings.update_config_agents(
+                Path(path), data.get("agents", []), add_editor=data.get("add_editor") is True,
+            )
+        except agent_settings.SettingsError as exc:
+            return self._error(400, str(exc))
+        except OSError as exc:
+            return self._error(500, f"Cannot save {path}: {exc}")
+        self._json(200, {"path": path, "agents": agents})
+
+    def _post_session_agents(self, session_dir: Path, data: dict) -> None:
+        if not self._dashboard_action("Reload the session page before changing agents"):
+            return
+        try:
+            agent_settings.update_session_agents(session_dir, data.get("agents", []))
+        except agent_settings.SettingsError as exc:
+            return self._error(409, str(exc))
+        session = load_session(session_dir)
+        self._json(200, {"agents": _agent_payload(session_dir, session)})
+
     def _post_pr_state(self, session_dir: Path) -> None:
         if not self._dashboard_action("Reload the sessions page before checking the PR"):
             return
@@ -1322,6 +1409,8 @@ def _agent_payload(session_dir: Path, session) -> list[dict]:
             "name": agent.name,
             "model": agent.model,
             "role": agent.role,
+            "persona": agent.persona,
+            "enabled": agent.enabled,
             "status": runtime.derive_status_from_snapshot(agent, snapshot),
             "process_status": snapshot["process_state"],
             "protocol_status": snapshot["protocol_status"],
@@ -1369,6 +1458,7 @@ def _normalize_base_url(base_url: str) -> str:
 
 def make_server(
     host: str, port: int, registry: SessionRegistry, *, base_url: str = "", queue=None,
+    review_config: str | None = None,
 ) -> ThreadingHTTPServer:
     """Build a ThreadingHTTPServer that serves `registry`.
 
@@ -1381,6 +1471,7 @@ def make_server(
         "queue": queue,
         "queue_token": secrets.token_urlsafe(32),
         "base_url": _normalize_base_url(base_url),
+        "review_config": review_config,
     })
     return ThreadingHTTPServer((host, port), handler_cls)
 
@@ -1420,6 +1511,7 @@ def serve(
     base_url: str = "",
     queue_config: str | None = None,
     pr_state_poll_seconds: float = pr_state.DEFAULT_POLL_SECONDS,
+    review_config: str | None = None,
 ) -> None:
     """Blocking multi-session server. Port 0 → OS-assigned.
 
@@ -1465,7 +1557,8 @@ def serve(
             )
         queue = ReviewQueue(primary, load_config(queue_config), registry)
     try:
-        srv = make_server(host, port, registry, base_url=base_url, queue=queue)
+        srv = make_server(host, port, registry, base_url=base_url, queue=queue,
+                          review_config=review_config)
     except Exception:
         if queue:
             queue.close()

@@ -126,6 +126,11 @@ you can instead forward its port through the editor's Ports panel. Set
 `PR_BASE_URL` only when a reverse proxy removes that same path prefix before
 forwarding requests.
 
+The dashboard has four tabs: **Review queue**, **PR reviews** (sessions for a
+GitHub PR, at `/`), **Local reviews** (sessions for a local branch, at `/local`),
+and **Settings** (agents and models, at `/settings`). `/api/sessions?kind=github`
+or `?kind=local` filters the session list the same way.
+
 ### Optional browser profiling
 
 The runtime has no browser dependency. For repeatable local performance
@@ -258,6 +263,19 @@ defaults.
 Agent configuration is copied into each new session. Editing the shared config
 affects new sessions; `launch`, `rerun`, and `curate` on existing sessions retain
 their saved agents.
+
+Set `"enabled": false` on an agent to keep it in the lineup without running it.
+Disabled agents are skipped by `launch`, `rerun`, completion, and progress, and
+naming one explicitly with `--agent` is an error. At least one reviewer must stay
+enabled. You can also change this from the web UI:
+
+- The **Settings** tab edits `enabled` and `model` in the project config that
+  seeds new sessions. It finds configs from `serve --review-config PATH`, the
+  queue accounts' `reviewConfig`, and `.peanut-review.json` next to the session
+  root. Other keys in the file are kept as written. Model suggestions come from
+  `cursor-agent --list-models`; any model ID can be typed.
+- **configure** in a session's Agents panel changes that session only. It is
+  refused while one of the session's agents is running.
 
 Cursor runners need permissions in the actual reviewed workspace before
 `launch`, including each new worktree. A `.cursor/cli.json` in the enclosing

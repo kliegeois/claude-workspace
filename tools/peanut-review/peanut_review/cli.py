@@ -1586,6 +1586,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
             base_url=args.base_url or "",
             queue_config=getattr(args, "queue_config", None),
             pr_state_poll_seconds=getattr(args, "pr_state_poll_seconds", 15 * 60),
+            review_config=getattr(args, "review_config", None),
         )
     except (RuntimeError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -2027,6 +2028,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--queue-config", metavar="PATH", help="Local account/repository configuration for the review queue")
     sp.add_argument("--pr-state-poll-seconds", type=float, default=15 * 60, metavar="SECONDS",
                     help="How often to check whether reviewed PRs were merged; 0 disables (default: 900)")
+    sp.add_argument("--review-config", metavar="PATH",
+                    help="Project .peanut-review.json edited by the Settings tab "
+                         "(default: the queue's reviewConfig, then <root>/../.peanut-review.json)")
     sp.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
     sp.add_argument("--port", type=int, default=0,
                     help="Bind port (0 = OS-assigned, default)")

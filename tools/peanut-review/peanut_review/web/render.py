@@ -994,11 +994,14 @@ def _render_sidebar(
             f'title="Stop {agent_attr}">kill</button>'
             if can_kill else ""
         )
+        disabled = a.enabled is False
+        off_badge = '<span class="agent-off">off</span>' if disabled else ""
         agent_rows += (
-            f'<li class="agent-row" data-agent="{agent_attr}">'
+            f'<li class="agent-row{" agent-disabled" if disabled else ""}" data-agent="{agent_attr}">'
             '<div class="agent-main">'
             '<span class="agent-ident">'
             f'<span class="agent-name">{agent_name}</span>'
+            f'{off_badge}'
             f'<span class="agent-model mono" title="{model_attr}">{model}</span>'
             '</span>'
             '<span class="agent-controls">'
@@ -1083,6 +1086,8 @@ def _render_sidebar(
         '<div class="sidebar-heading agents-heading">'
         '<h3>Agents</h3>'
         '<span class="agent-heading-actions">'
+        '<button id="agent-config-btn" type="button" class="agent-config" '
+        'title="Enable or disable agents and choose their models for this session">configure</button>'
         f'{curator_button}'
         f'{rerun_all_button}'
         '<button id="kill-all-agents-btn" type="button" class="agent-kill-all" '
@@ -1246,6 +1251,50 @@ def _render_session_row(s: dict, base_url: str = "") -> str:
     )
 
 
+APP_TABS = (
+    ("queue", "/queue", "Review queue"),
+    ("github", "/", "PR reviews"),
+    ("local", "/local", "Local reviews"),
+    ("settings", "/settings", "Settings"),
+)
+
+
+def render_app_nav(base_url: str, current: str) -> str:
+    base = html.escape(base_url, quote=True)
+    current_attr = ' aria-current="page"'
+    links = "".join(
+        f'<a href="{base}{path}"{current_attr if key == current else ""}>{label}</a>'
+        for key, path, label in APP_TABS
+    )
+    return f'<nav class="app-nav" aria-label="Dashboard">{links}</nav>'
+
+
+def _render_local_form(review_configs: list[str]) -> str:
+    options = "".join(
+        f'<option value="{html.escape(p, quote=True)}">{html.escape(p)}</option>'
+        for p in review_configs
+    ) or '<option value="">(none found)</option>'
+    return (
+        '<details id="local-new" class="local-new">'
+        '<summary>New local review</summary>'
+        '<form id="local-new-form" class="local-new-form" autocomplete="off">'
+        '<label>Worktree <input name="workspace" required placeholder="/path/to/worktree" '
+        'class="mono"></label>'
+        '<label>Base commit <input name="base" required placeholder="SHA the branch starts from" '
+        'class="mono"></label>'
+        f'<label>Review config <select name="config">{options}</select></label>'
+        '<label>Max edit rounds <input name="rounds" type="number" min="0" max="10" value="3"></label>'
+        '<p class="sub">Each round: reviewers, then the curator, then the Editor commits its fixes. '
+        'Rounds stop early when the curator leaves no unresolved comments or the Editor '
+        'makes no commit. 0 runs one review without edits. Nothing is pushed.</p>'
+        '<fieldset id="local-new-agents"><legend>Agents</legend>'
+        '<p class="sub">Loading agents…</p></fieldset>'
+        '<p id="local-new-error" class="error" role="alert" hidden></p>'
+        '<button id="local-new-submit" type="submit" class="primary">Start review</button>'
+        '</form></details>'
+    )
+
+
 def render_index(
     sessions: list[dict],
     *,
@@ -1254,6 +1303,8 @@ def render_index(
     total_sessions: int | None = None,
     has_more: bool = False,
     action_token: str = "",
+    kind: str = "github",
+    review_configs: list[str] | None = None,
 ) -> str:
     """Session-picker page served at `/`.
 
@@ -1266,8 +1317,17 @@ def render_index(
     script_url = html.escape(_asset_url(base_url, "index.js"), quote=True)
     total = len(sessions) if total_sessions is None else total_sessions
     rows = "\n".join(_render_session_row(s, base_url) for s in sessions)
+    is_local = kind == "local"
+    noun = "local review" if is_local else "PR review"
+    empty_hint = (
+        'Start one with <strong>New local review</strong> above, or with:'
+        '<pre class="mono">peanut-review init --workspace . --base &lt;sha&gt; --topic HEAD</pre>'
+        if is_local else
+        'Start one with:<pre class="mono">peanut-review start &lt;pr-url&gt; --no-launch</pre>'
+    )
     body = (
-        f'<table class="sessions"{"" if sessions else " hidden"}>'
+        (_render_local_form(review_configs or []) if is_local else "")
+        + f'<table class="sessions"{"" if sessions else " hidden"}>'
         '<thead><tr>'
         '<th>Session</th><th>Progress</th><th>Change</th>'
         '<th>Workspace</th><th>Comments</th><th>Updated</th><th></th>'
@@ -1275,9 +1335,8 @@ def render_index(
         f'<tbody id="session-rows">{rows}</tbody>'
         '</table>'
         f'<div id="session-empty" class="empty"{" hidden" if sessions else ""}>'
-        f'No review sessions found under <span class="mono">{roots_str}</span>.'
-        '<br><br>Create one with:'
-        '<pre class="mono">peanut-review init --workspace . --base main --topic HEAD</pre>'
+        f'No {noun}s found under <span class="mono">{roots_str}</span>.'
+        f'<br><br>{empty_hint}'
         '</div>'
         f'<button id="load-more" type="button"'
         f'{"" if has_more else " hidden"}>Load older sessions</button>'
@@ -1288,7 +1347,7 @@ def render_index(
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>peanut-review — sessions</title>
+  <title>peanut-review — {noun}s</title>
   <link rel="icon" href="{FAVICON_HREF}">
   <link rel="stylesheet" href="{style_url}">
   {THEME_BOOTSTRAP}
@@ -1296,7 +1355,7 @@ def render_index(
 <body class="index">
   <header>
     <h1><a href="{index_href}">🥜 peanut-review</a></h1>
-    <nav class="app-nav" aria-label="Dashboard"><a href="{html.escape(base_url, quote=True)}/queue">Review queue</a><a href="{html.escape(base_url, quote=True)}/" aria-current="page">Sessions</a></nav>
+    {render_app_nav(base_url, "local" if is_local else "github")}
     <span id="session-count" class="meta">{total} session{"s" if total != 1 else ""}</span>
     <span class="meta mono">{roots_str}</span>
     <span class="spacer"></span>
@@ -1321,6 +1380,47 @@ def render_index(
   <script>
     window.PR_BASE_URL = {base_url_js};
     window.PR_ACTION_TOKEN = {json.dumps(action_token)};
+    window.PR_SESSION_KIND = {json.dumps(kind)};
+  </script>
+  <script src="{script_url}"></script>
+</body>
+</html>
+"""
+
+
+def render_settings(base_url: str, action_token: str) -> str:
+    """Settings tab: enable agents and pick models in the project review config."""
+    base_url_js = json.dumps(base_url)
+    style_url = html.escape(_asset_url(base_url, "style.css"), quote=True)
+    script_url = html.escape(_asset_url(base_url, "settings.js"), quote=True)
+    index_href = base_url if base_url else "/"
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>peanut-review — settings</title>
+  <link rel="icon" href="{FAVICON_HREF}">
+  <link rel="stylesheet" href="{style_url}">
+  {THEME_BOOTSTRAP}
+</head>
+<body class="index settings-page">
+  <header>
+    <h1><a href="{index_href}">🥜 peanut-review</a></h1>
+    {render_app_nav(base_url, "settings")}
+    <span class="spacer"></span>
+    <button id="models-refresh" type="button" title="Reload the model list from cursor-agent">Reload models</button>
+  </header>
+  <main class="index-main">
+    <h2>Agents for new sessions</h2>
+    <p class="meta">These settings apply to sessions created after you save, for both PR and
+      local reviews. To change one existing session, use <strong>configure</strong> in its
+      Agents panel before a launch or rerun.</p>
+    <div id="settings-configs" aria-live="polite">Loading…</div>
+    <datalist id="model-options"></datalist>
+  </main>
+  <script>
+    window.PR_BASE_URL = {base_url_js};
+    window.PR_ACTION_TOKEN = {json.dumps(action_token)};
   </script>
   <script src="{script_url}"></script>
 </body>
@@ -1339,6 +1439,7 @@ def render_page(
     base_url: str = "",
     agent_runtime: dict[str, dict[str, str]] | None = None,
     poll_etags: dict[str, str] | None = None,
+    action_token: str = "",
 ) -> str:
     """Build the full HTML page for a session.
 
@@ -1485,8 +1586,20 @@ def render_page(
       </div>
     </div>
   </div>
+  <dialog id="agent-config-dialog" class="delete-dialog" aria-labelledby="agent-config-title">
+    <h2 id="agent-config-title">Agents for this session</h2>
+    <p class="sub">Changes apply to the next launch or rerun. They cannot be made while an agent runs.</p>
+    <div id="agent-config-body"></div>
+    <datalist id="agent-model-options"></datalist>
+    <p id="agent-config-error" class="error" role="alert" hidden></p>
+    <div class="delete-actions">
+      <button id="agent-config-cancel" type="button">Cancel</button>
+      <button id="agent-config-save" type="button" class="primary">Save</button>
+    </div>
+  </dialog>
   <script>
     window.PR_BASE_URL = {base_url_js};
+    window.PR_ACTION_TOKEN = {json.dumps(action_token)};
     window.PR_SESSION_URL = {session_url_js};
     window.PR_SESSION_ID = {session_id_js};
     window.PR_KNOWN_COMMENT_IDS = {known_comment_ids_js};
