@@ -1219,17 +1219,28 @@ def _render_session_row(s: dict, base_url: str = "") -> str:
         + (f' · <span class="n muted">{stale}</span><span class="sub"> stale</span>' if stale else "")
         + push_activity
     )
+    cleanup = s.get("cleanup") or {}
+    safe = bool(cleanup.get("safe_to_delete"))
+    cleanup_html = (
+        f'<div class="cleanup-hint{" safe" if safe else ""}">{html.escape(cleanup["label"])}</div>'
+        if cleanup.get("label") else ""
+    )
+    check_html = (
+        f'<button type="button" class="session-pr-check" data-id="{sid}" '
+        f'title="Check whether the PR was merged">Check PR</button>'
+        if s.get("is_github") else ""
+    )
     return (
-        f'<tr class="session-row" data-id="{sid}">'
+        f'<tr class="session-row{" safe-to-delete" if safe else ""}" data-id="{sid}">'
         f'<td class="id"><a href="{base_url}/{sid}">{sid}</a>'
         f'<div class="mono head">{session_reference}</div></td>'
         f'<td><span class="badge review-progress progress-{progress_status}" '
-        f'title="Agent-derived review progress">{progress_label}</span></td>'
+        f'title="Agent-derived review progress">{progress_label}</span>{cleanup_html}</td>'
         f'<td class="change" title="{change}">{change}</td>'
         f'<td class="mono workspace">{workspace}</td>'
         f'<td class="counts">{counts}</td>'
         f'<td class="mono updated">{updated}</td>'
-        f'<td class="session-actions"><button type="button" class="session-delete" '
+        f'<td class="session-actions">{check_html}<button type="button" class="session-delete" '
         f'data-id="{sid}">Delete</button></td>'
         f'</tr>'
     )

@@ -642,6 +642,14 @@ config and build logs) are listed and must be confirmed. Removal uses
 `git worktree remove` and keeps the branch, reporting commits not pushed to its
 upstream. Main clones are never removed. Requests require the page's token.
 
+GitHub sessions also show whether their PR was merged. The web server checks
+each open PR every 15 minutes with the session's bound account and stores the
+result in `<session>/pr-state.json`; `serve --pr-state-poll-seconds 0` turns
+this off, and **Check PR** on a row checks at once. A merged PR whose agents
+are not running is labelled **PR merged · safe to delete**. Nothing is deleted
+automatically: use **Delete** when you are ready. `peanut-review pr-state
+[--refresh]` prints the same result for one session.
+
 ## Review queue
 
 The **Review queue** tab discovers open PRs requested from each configured

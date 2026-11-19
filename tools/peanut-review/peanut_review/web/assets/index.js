@@ -106,18 +106,47 @@
     const sessionReference = s.github_url
       ? `<a class="github-ref" href="${attrEsc(s.github_url)}" target="_blank" rel="noopener noreferrer" title="Open GitHub PR">${esc(sessionSubtitle)}</a>`
       : esc(sessionSubtitle);
+    const cleanup = s.cleanup || {};
+    const safe = Boolean(cleanup.safe_to_delete);
+    const cleanupHint = cleanup.label
+      ? `<div class="cleanup-hint${safe ? " safe" : ""}">${esc(cleanup.label)}</div>`
+      : "";
+    const check = s.is_github
+      ? `<button type="button" class="session-pr-check" data-id="${attrEsc(s.id)}" title="Check whether the PR was merged">Check PR</button>`
+      : "";
     return `
-      <tr class="session-row" data-id="${esc(s.id)}">
+      <tr class="session-row${safe ? " safe-to-delete" : ""}" data-id="${esc(s.id)}">
         <td class="id"><a href="${BASE}/${esc(s.id)}">${esc(s.id)}</a>
           <div class="mono head">${sessionReference}</div></td>
-        <td><span class="badge review-progress progress-${esc(progress.status)}" title="Agent-derived review progress">${esc(progress.label)}</span></td>
+        <td><span class="badge review-progress progress-${esc(progress.status)}" title="Agent-derived review progress">${esc(progress.label)}</span>${cleanupHint}</td>
         <td class="change" title="${esc(change)}">${esc(change)}</td>
         <td class="mono workspace">${esc(s.workspace)}</td>
         <td class="counts">${countsCell(s)}</td>
         <td class="mono updated">${updatedCell(s.updated_at)}</td>
-        <td class="session-actions"><button type="button" class="session-delete" data-id="${attrEsc(s.id)}">Delete</button></td>
+        <td class="session-actions">${check}<button type="button" class="session-delete" data-id="${attrEsc(s.id)}">Delete</button></td>
       </tr>
     `;
+  }
+
+  async function checkPr(button) {
+    const id = button.dataset.id;
+    button.disabled = true;
+    button.textContent = "Checking…";
+    try {
+      const r = await fetch(`${BASE}/${encodeURIComponent(id)}/api/session/pr-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Peanut-Queue-Token": window.PR_ACTION_TOKEN || "" },
+        body: "{}",
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || `Check failed (${r.status})`);
+      if (data.error) throw new Error(data.error);
+      await refresh();
+    } catch (err) {
+      button.disabled = false;
+      button.textContent = "Check PR";
+      button.title = err.message;
+    }
   }
 
   function formatBytes(bytes) {
@@ -237,6 +266,8 @@
   document.getElementById("session-rows")?.addEventListener("click", (event) => {
     const button = event.target.closest(".session-delete");
     if (button) openDeleteDialog(button.dataset.id);
+    const check = event.target.closest(".session-pr-check");
+    if (check) checkPr(check);
   });
   document.getElementById("delete-cancel")?.addEventListener("click", () => { if (!deleteBusy) deleteDialog.close(); });
   deleteConfirm?.addEventListener("click", confirmDelete);

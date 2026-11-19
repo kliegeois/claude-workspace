@@ -22,7 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from .. import agent_control, gh, gh_pull, gh_push, launch, runtime, session_delete, store
+from .. import agent_control, gh, gh_pull, gh_push, launch, pr_state, runtime, session_delete, store
 from ..models import Comment, CommentCategory, Note, Session, normalize_comment_category
 from ..session import (
     GLOBAL_FILE,
@@ -187,9 +187,15 @@ class SessionRegistry:
     def only(self) -> str | None:
         return next(iter(self._by_id)) if len(self._by_id) == 1 else None
 
+    def session_dirs(self) -> list[Path]:
+        if self._roots:
+            self.rescan()
+        with self._lock:
+            return list(self._by_id.values())
+
     @staticmethod
     def _summary_revision(session_dir: Path) -> tuple:
-        paths = [session_dir / "session.json"]
+        paths = [session_dir / "session.json", session_dir / pr_state.STATE_FILE]
         for subdir in ("comments", "notes", "signals"):
             directory = session_dir / subdir
             if directory.is_dir():
@@ -234,6 +240,8 @@ class SessionRegistry:
             if s.github and s.github.url else ""
         )
         agents = _agent_payload(sdir, s)
+        progress = summarize_agent_progress(agents)
+        github_state = pr_state.read_pr_state(sdir) if s.github else {}
         summary = {
             "id": sid,
             "base_ref": s.base_ref,
@@ -251,8 +259,11 @@ class SessionRegistry:
             "stale_count": sum(1 for c in live if c.stale),
             "deleted_count": len(comments) - len(live),
             "note_count": len(notes),
-            "progress": summarize_agent_progress(agents),
+            "progress": progress,
             "push_activity": summarize_push_activity(s, comments),
+            "is_github": bool(s.github),
+            "pr_state": github_state.get("state", ""),
+            "cleanup": pr_state.cleanup_hint(github_state, progress["status"]),
         }
         self._summary_cache[sid] = (revision, dict(summary))
         return summary
@@ -698,6 +709,9 @@ class _Handler(BaseHTTPRequestHandler):
         if tail == "/api/session/delete":
             self._post_session_delete(session_dir, data)
             return
+        if tail == "/api/session/pr-state":
+            self._post_pr_state(session_dir)
+            return
         if tail == "/api/comments":
             self._post_comment(session_dir, data)
             return
@@ -1141,6 +1155,17 @@ class _Handler(BaseHTTPRequestHandler):
             self.registry.rescan(force=True)
         self._json(200, result)
 
+    def _post_pr_state(self, session_dir: Path) -> None:
+        if not self._dashboard_action("Reload the sessions page before checking the PR"):
+            return
+        try:
+            state = pr_state.refresh_pr_state(session_dir, force=True)
+        except (OSError, ValueError) as exc:
+            return self._error(500, f"PR check failed: {exc}")
+        if not state:
+            return self._error(400, "This session is not a GitHub review")
+        self._json(200, state)
+
     def _post_queue(self, path: str) -> None:
         if self.queue is None:
             return self._error(503, "Review queue is not configured")
@@ -1394,6 +1419,7 @@ def serve(
     extra_sessions: Iterable[str | Path] = (),
     base_url: str = "",
     queue_config: str | None = None,
+    pr_state_poll_seconds: float = pr_state.DEFAULT_POLL_SECONDS,
 ) -> None:
     """Blocking multi-session server. Port 0 → OS-assigned.
 
@@ -1470,15 +1496,20 @@ def serve(
         def stop_queue_server(_signum, _frame):
             raise KeyboardInterrupt
         previous_term = signal.signal(signal.SIGTERM, stop_queue_server)
+    poller = pr_state.PRStatePoller(registry.session_dirs, poll_seconds=pr_state_poll_seconds)
     try:
         if queue:
             queue.start()
+        if pr_state_poll_seconds > 0:
+            poller.start()
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         if previous_term is not None:
             signal.signal(signal.SIGTERM, previous_term)
+        if pr_state_poll_seconds > 0:
+            poller.close()
         if queue:
             queue.close()
         srv.server_close()
