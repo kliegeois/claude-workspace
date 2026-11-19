@@ -109,8 +109,65 @@ def test_newly_discovered_prs_are_fetched_first(queue, monkeypatch):
     monkeypatch.setattr(review_queue, "search_requests", lambda login: [
         {"html_url": "https://github.com/acme/widget/pull/1"}, {"html_url": "https://github.com/acme/widget/pull/2"}])
     monkeypatch.setattr(review_queue, "fetch_pr", fetch_pr)
+    monkeypatch.setattr(review_queue, "FETCH_WORKERS", 1)
     queue.refresh()
     assert fetched == [2, 1]
+
+
+def test_prs_reported_unchanged_by_search_are_not_refetched(queue, monkeypatch):
+    listed = {"html_url": remote()["url"], "updated_at": "2026-11-19T10:00:00+00:00"}
+    results = [listed]
+    fetched = []
+    def fetch_pr(repo, number):
+        fetched.append(number)
+        return remote(updated_at=listed["updated_at"], labels=[], state=state)
+    state = "open"
+    monkeypatch.setattr(gh, "account_auth", authenticate)
+    monkeypatch.setattr(review_queue, "search_requests", lambda login: results)
+    monkeypatch.setattr(review_queue, "fetch_pr", fetch_pr)
+    queue.refresh()
+    checked = queue.state["items"][add_key()]["checked_at"]
+    queue.refresh()
+    assert len(fetched) == 1
+    assert queue.state["items"][add_key()]["checked_at"] > checked
+    listed["updated_at"] = "2026-11-19T11:00:00+00:00"
+    queue.refresh()
+    assert len(fetched) == 2
+    monkeypatch.setattr(review_queue, "REFETCH_SECONDS", -1)
+    queue.refresh()
+    assert len(fetched) == 3
+    monkeypatch.setattr(review_queue, "REFETCH_SECONDS", 1800)
+    # Searches list only open PRs; an unlisted open PR is checked for closing.
+    results.clear()
+    state = "closed"
+    queue.refresh()
+    queue.refresh()
+    assert len(fetched) == 4
+
+
+def add_key(account=ACCOUNT, repo="acme/widget", number=1):
+    return review_queue.identity_key(account, repo, number)
+
+
+def test_parallel_fetches_use_the_selected_account(queue, monkeypatch):
+    @contextmanager
+    def account_auth(host, login, expected=None):
+        with authenticate(host, login, expected) as account:
+            marker = gh._CREDENTIALS.set(gh._Credentials(host, "token", account))
+            try:
+                yield account
+            finally:
+                gh._CREDENTIALS.reset(marker)
+    def fetch_pr(repo, number):
+        return remote(number=number, url=f"https://github.com/acme/widget/pull/{number}",
+                      title=gh.current_account().login)
+    monkeypatch.setattr(gh, "account_auth", account_auth)
+    monkeypatch.setattr(review_queue, "search_requests", lambda login: [
+        {"html_url": f"https://github.com/acme/widget/pull/{number}"} for number in range(1, 9)])
+    monkeypatch.setattr(review_queue, "fetch_pr", fetch_pr)
+    queue.refresh()
+    assert {item["title"] for item in queue.state["items"].values()} == {"alice"}
+    assert all(not item["error"] for item in queue.state["items"].values())
 
 
 def test_extra_searches_are_validated(tmp_path):

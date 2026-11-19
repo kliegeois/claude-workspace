@@ -871,6 +871,11 @@ requests a remote poll and never starts reviewers. Search results are paginated;
 GitHub's incomplete-search response or 1,000-result cap is reported as an error
 rather than silently dropping requests.
 
+A poll refetches a PR only when it is new, its last fetch failed, its search
+result shows a newer update, or its last full fetch is over 30 minutes old.
+Open PRs that no search lists any longer are refetched so closing is noticed.
+Refetches run four at a time, and progress is saved every 30 seconds.
+
 **Copy review task** and **Copy re-review task** copy a task for your driver
 conversation. It includes the PR URL, selected GitHub account, review config,
 session root, existing session/workspace, configured checkout paths, and observed

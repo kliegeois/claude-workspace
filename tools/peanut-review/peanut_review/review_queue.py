@@ -5,6 +5,7 @@ preparation and review execution. Credentials stay inside gh.account_auth.
 """
 from __future__ import annotations
 
+import contextvars
 import copy
 import fcntl
 import hashlib
@@ -12,6 +13,8 @@ import json
 import os
 import re
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,10 +27,30 @@ from .models import GitHubAccount
 REPO_RE = re.compile(r"[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+")
 SHA_RE = re.compile(r"[0-9a-f]{40,64}")
 ACTIVE_JOB_STATES = {"queued", "preparing", "reviewing", "curating"}
+# Each `gh api` call takes about a second; a few in flight keep polls short
+# without approaching GitHub's concurrency limits.
+FETCH_WORKERS = 4
+# Refetch PRs that searches report unchanged at least this often.
+REFETCH_SECONDS = 1800
+SAVE_SECONDS = 30
+_TEAM_LOCK = threading.Lock()
 
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def needs_fetch(item: dict, listed: bool, listed_updated_at: str | None, search_requested: bool) -> bool:
+    """Skip PRs whose search result shows no change since their last fetch."""
+    fetched = item.get("fetched_at")
+    if not fetched or item.get("error") or "labels" not in item:
+        return True
+    if not listed:
+        # Searches list only open PRs; a reopened PR is listed again.
+        return item.get("state") == "open"
+    return (listed_updated_at is None or listed_updated_at != item.get("updated_at")
+            or search_requested != item.get("search_requested")
+            or (datetime.now(timezone.utc) - datetime.fromisoformat(fetched)).total_seconds() > REFETCH_SECONDS)
 
 
 def identity_key(account: GitHubAccount, repo: str, number: int) -> str:
@@ -222,12 +245,13 @@ def request_origin(remote: dict, previous: dict, account: GitHubAccount, team_ca
     member_teams = set()
     if candidate_teams:
         # One account-scoped membership lookup per poll, including failed lookups.
-        if not team_cache:
-            try:
-                teams = gh._parse_paginated(gh._api("user/teams?per_page=100", paginate=True))
-                team_cache["ids"] = {team["id"] for team in teams}
-            except Exception as error:
-                team_cache["error"] = str(error)
+        with _TEAM_LOCK:
+            if not team_cache:
+                try:
+                    teams = gh._parse_paginated(gh._api("user/teams?per_page=100", paginate=True))
+                    team_cache["ids"] = {team["id"] for team in teams}
+                except Exception as error:
+                    team_cache["error"] = str(error)
         if "error" in team_cache:
             membership_ok = False
             result["request_kind_error"] = f'Could not check team membership: {team_cache["error"]}'
@@ -379,13 +403,16 @@ class ReviewQueue:
                     with gh.account_auth(configured["hostname"], configured["login"], expected=expected) as account:
                         team_cache = {}
                         self._attach_sessions(account)
+                        listed_updated_at = {}
                         def discovered(results: list[dict]) -> dict:
                             found = {}
                             for result in results:
                                 repo, number = gh.parse_pr_spec(result["html_url"])
                                 if gh.hostname_for_spec(result["html_url"]) != account.hostname:
                                     raise ValueError("review search returned a different GitHub host")
-                                found[identity_key(account, repo, number)] = (repo, number)
+                                key = identity_key(account, repo, number)
+                                found[key] = (repo, number)
+                                listed_updated_at[key] = result.get("updated_at")
                             return found
 
                         requested = discovered(search_requests(account.login))
@@ -398,20 +425,44 @@ class ReviewQueue:
                             for key, (repo, number) in {**followed, **requested}.items():
                                 self.state["items"].setdefault(key, {"key": key, "account": asdict(account), "repo": repo, "number": number})
                             tracked = [copy.deepcopy(item) for item in self.state["items"].values() if item["account"] == asdict(account)]
-                        # A full poll can take minutes; fetch newly discovered PRs first.
-                        tracked.sort(key=lambda item: "checked_at" in item)
+                        stale = []
                         for old in tracked:
-                            if self.stopping.is_set():
-                                return
                             key = old["key"]
-                            try:
-                                remote = fetch_pr(old["repo"], old["number"])
-                                remote.update(request_origin(remote, old, account, team_cache))
-                            except Exception as error:
-                                remote = {"error": str(error)}
-                            with self.lock:
-                                self.state["items"][key].update(
-                                    remote, requested=remote.get("requested", key in requested))
+                            if needs_fetch(old, key in listed_updated_at, listed_updated_at.get(key), key in requested):
+                                stale.append(old)
+                            else:
+                                with self.lock:
+                                    self.state["items"][key]["checked_at"] = now()
+                        # A full poll can take minutes; fetch newly discovered PRs first.
+                        stale.sort(key=lambda item: "checked_at" in item)
+
+                        def fetch(old: dict) -> dict:
+                            remote = fetch_pr(old["repo"], old["number"])
+                            remote.update(request_origin(remote, old, account, team_cache))
+                            return remote
+
+                        saved = time.monotonic()
+                        with ThreadPoolExecutor(FETCH_WORKERS) as pool:
+                            # Workers need the account selected by account_auth.
+                            futures = {pool.submit(contextvars.copy_context().run, fetch, old): old["key"]
+                                       for old in stale}
+                            for future in as_completed(futures):
+                                if self.stopping.is_set():
+                                    pool.shutdown(cancel_futures=True)
+                                    return
+                                key = futures[future]
+                                try:
+                                    remote = future.result()
+                                    remote["fetched_at"] = remote["checked_at"]
+                                except Exception as error:
+                                    remote = {"error": str(error)}
+                                with self.lock:
+                                    self.state["items"][key].update(
+                                        remote, requested=remote.get("requested", key in requested),
+                                        search_requested=key in requested)
+                                    if time.monotonic() - saved > SAVE_SECONDS:
+                                        self._save()
+                                        saved = time.monotonic()
                         with self.lock:
                             self.state["accounts"][account_key] = {"identity": asdict(account), "checked_at": now(), "error": ""}
                 except Exception as error:
