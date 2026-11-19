@@ -43,6 +43,7 @@ def render_queue(base_url: str, token: str, enabled: bool) -> str:
 <option value="attention">Needs attention</option><option value="open" selected>All open PRs</option><option value="requested">Review requested</option><option value="stale">Stale reviews</option><option value="running">Running reviews</option><option value="all">Include closed PRs</option>
 </select>
 <label class="queue-toggle"><input id="queue-hide-approved" type="checkbox"> Hide PRs I approved</label>
+<label class="queue-toggle" title="Hides PRs whose latest commit you reviewed on GitHub"><input id="queue-hide-reviewed" type="checkbox"> Hide PRs I reviewed</label>
 <label class="queue-toggle"><input id="queue-hide-drafts" type="checkbox"> Hide drafts</label>
 <label class="queue-toggle"><input id="queue-hide-stale" type="checkbox"> Hide stale</label>
 <label class="queue-toggle"><input id="queue-hide-mine" type="checkbox" checked> Hide my PRs</label></div>

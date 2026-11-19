@@ -376,6 +376,33 @@ def test_approval_tracks_latest_decisive_account_review(monkeypatch, events, app
     assert result["approved"] is approved
 
 
+@pytest.mark.parametrize(("states", "expected"), [
+    ([], None),
+    (["commented"], "commented"),
+    (["approved", "commented"], "commented"),
+    (["changes_requested", "dismissed"], "changes_requested"),
+])
+def test_github_review_is_the_latest_standing_account_review(monkeypatch, states, expected):
+    events = [{"event": "reviewed", "user": {"id": 10}, "state": state.upper(), "commit_id": f"{index}" * 40,
+               "submitted_at": f"2026-01-01T00:00:0{index}Z"} for index, state in enumerate(states)]
+    events.append({"event": "reviewed", "user": {"id": 99}, "state": "APPROVED", "commit_id": "f" * 40,
+                   "submitted_at": "2026-01-01T00:00:09Z"})
+    monkeypatch.setattr(gh, "_api", lambda *args, **kwargs: json.dumps(events))
+    review = review_queue.request_origin(remote(request_kind=None), {}, ACCOUNT, {})["github_review"]
+    assert (review and review["state"]) == expected
+    if expected:
+        assert review["commit"] == next(e["commit_id"] for e in reversed(events) if e["state"] == expected.upper())
+
+
+def test_github_review_on_the_head_commit_is_current(queue):
+    key = add_item(queue, labels=[], github_review={"state": "changes_requested", "commit": "a" * 40})
+    assert queue.payload()["items"][0]["freshness"] == "current"
+    queue.state["items"][key]["github_review"]["commit"] = "c" * 40
+    assert queue.payload()["items"][0]["freshness"] == "stale"
+    queue.state["items"][key]["github_review"] = None
+    assert queue.payload()["items"][0]["freshness"] == "unreviewed"
+
+
 def test_pending_direct_request_is_not_approved():
     result = review_queue.request_origin(remote(), {"approved": True}, ACCOUNT, {})
     assert result["approved"] is False
@@ -390,6 +417,9 @@ def test_cached_history_without_review_states_is_refetched(monkeypatch):
     result = review_queue.request_origin(metadata, previous, ACCOUNT, {})
     assert result["approved"] is True
     assert result["request_history"][0]["state"] == "approved"
+    # Caches with states but no commits are refetched as well.
+    previous["request_history"] = [{"event": "reviewed", "team_id": None, "state": "approved"}]
+    assert "commit" in review_queue.request_origin(metadata, previous, ACCOUNT, {})["request_history"][0]
 
 
 def test_team_removal_rechecks_history_even_if_updated_at_is_unchanged(monkeypatch):

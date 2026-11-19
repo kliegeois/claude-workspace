@@ -23,7 +23,7 @@
 
   const HIDE_KEY = "pr.queue.hide";
   const toggles = {
-    approved: byId("queue-hide-approved"), drafts: byId("queue-hide-drafts"),
+    approved: byId("queue-hide-approved"), reviewed: byId("queue-hide-reviewed"), drafts: byId("queue-hide-drafts"),
     stale: byId("queue-hide-stale"), mine: byId("queue-hide-mine"),
   };
   try {
@@ -129,6 +129,9 @@
       text.select();
     }
   }
+  function reviewedHead(item) {
+    return Boolean(item.github_review?.commit && item.github_review.commit === item.head_sha);
+  }
   function visible(item) {
     const query = byId("queue-search").value.trim().toLowerCase();
     const account = byId("queue-account").value;
@@ -138,6 +141,7 @@
     if (requestType && requestType !== item.request_kind) return false;
     if (query && !`${item.repo} ${item.number} ${item.title || ""} ${item.author || ""} ${(item.labels || []).join(" ")}`.toLowerCase().includes(query)) return false;
     if (toggles.approved.checked && item.approved) return false;
+    if (toggles.reviewed.checked && reviewedHead(item)) return false;
     if (toggles.drafts.checked && item.draft) return false;
     if (toggles.stale.checked && item.freshness === "stale") return false;
     if (toggles.mine.checked && item.author && item.author.toLowerCase() === item.account?.login?.toLowerCase()) return false;
@@ -184,7 +188,10 @@
       identity.append(node("div", account?.label || item.account.login), node("div", requestLabel, "sub"));
       if (item.requested) identity.append(node("div", "Review requested", "sub"));
       else if (item.request_kind) identity.append(node("div", "No pending request", "sub"));
-      if (item.approved) identity.append(node("div", "Approved by you", "sub"));
+      const reviewLabel = item.approved ? "Approved by you" : {
+        changes_requested: "Changes requested by you", commented: "Commented by you",
+      }[item.github_review?.state];
+      if (reviewLabel) identity.append(node("div", reviewLabel, "sub"));
       if (item.request_kind_error) identity.append(node("div", item.request_kind_error, "queue-detail error"));
       const review = node("td");
       const progress = item.session_progress?.status || "pending";
@@ -192,7 +199,10 @@
       const freshness = node("td");
       const freshLabels = { current: "Up to date", stale: "Stale", unknown: "Unknown", unreviewed: "Not reviewed", incomplete: "Completion unconfirmed" };
       freshness.append(node("span", freshLabels[item.freshness], `queue-freshness freshness-${item.freshness}`));
-      const detail = item.completed_snapshot ? `Reviewed ${item.completed_snapshot.head_sha.slice(0, 8)} · latest ${(item.head_sha || "").slice(0, 8)}` : item.head_sha ? `Latest ${item.head_sha.slice(0, 8)}` : "";
+      const latest = (item.head_sha || "").slice(0, 8);
+      const detail = item.completed_snapshot ? `Reviewed ${item.completed_snapshot.head_sha.slice(0, 8)} · latest ${latest}`
+        : item.github_review?.commit ? `You reviewed ${item.github_review.commit.slice(0, 8)} on GitHub · latest ${latest}`
+        : item.head_sha ? `Latest ${latest}` : "";
       freshness.append(node("div", detail, "sub mono"), node("div", relativeTime(item.checked_at), "sub"));
       if (item.completion_detail) freshness.append(node("div", item.completion_detail, "queue-detail"));
       if (item.error) freshness.append(node("div", item.error, "queue-detail error"));

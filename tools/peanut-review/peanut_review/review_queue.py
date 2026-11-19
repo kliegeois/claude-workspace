@@ -43,7 +43,7 @@ def now() -> str:
 def needs_fetch(item: dict, listed: bool, listed_updated_at: str | None, search_requested: bool) -> bool:
     """Skip PRs whose search result shows no change since their last fetch."""
     fetched = item.get("fetched_at")
-    if not fetched or item.get("error") or "labels" not in item:
+    if not fetched or item.get("error") or "labels" not in item or "github_review" not in item:
         return True
     if not listed:
         # Searches list only open PRs; a reopened PR is listed again.
@@ -187,6 +187,7 @@ def request_history(repo: str, number: int, account: GitHubAccount) -> list[dict
             entry = {"event": action, "team_id": team_id}
             if action == "reviewed":
                 entry["state"] = (event.get("state") or "").lower()
+                entry["commit"] = event.get("commit_id")
             history.append(entry)
     return history
 
@@ -200,6 +201,15 @@ def approved_by_account(history: list[dict]) -> bool:
         elif event["event"] == "review_requested" and event["team_id"] is None:
             approved = False
     return approved
+
+
+def review_by_account(history: list[dict]) -> dict | None:
+    """The account's latest GitHub review that was not dismissed."""
+    review = None
+    for event in history:
+        if event["event"] == "reviewed" and event.get("state") in {"approved", "changes_requested", "commented"}:
+            review = {"state": event["state"], "commit": event.get("commit")}
+    return review
 
 
 def request_origin(remote: dict, previous: dict, account: GitHubAccount, team_cache: dict) -> dict:
@@ -219,14 +229,15 @@ def request_origin(remote: dict, previous: dict, account: GitHubAccount, team_ca
         # A new request restores a withdrawn row. Recheck history on its next
         # disappearance, even if GitHub's updated_at has not advanced yet.
         result.update(request_kind="direct", requested=True, request_withdrawn=False,
-                      request_history_updated_at=None, approved=False)
+                      request_history_updated_at=None, approved=False,
+                      github_review=previous.get("github_review"))
         return result
 
     history = previous.get("request_history")
     history_ok = True
     if (history is None or not previous.get("request_history_updated_at")
-            # Older caches did not record review states.
-            or any(event["event"] == "reviewed" and "state" not in event for event in history)
+            # Older caches did not record review states or commits.
+            or any(event["event"] == "reviewed" and not {"state", "commit"} <= event.keys() for event in history)
             or previous["request_history_updated_at"] != remote["updated_at"]
             or set(previous.get("requested_team_ids", [])) != set(remote.get("requested_team_ids", []))):
         try:
@@ -239,6 +250,7 @@ def request_origin(remote: dict, previous: dict, account: GitHubAccount, team_ca
 
     history = history or []
     result["approved"] = approved_by_account(history) if history_ok else previous.get("approved", False)
+    result["github_review"] = review_by_account(history) if history_ok else previous.get("github_review")
     current_teams = set(remote.get("requested_team_ids", []))
     candidate_teams = {event["team_id"] for event in history if event["team_id"] is not None} | current_teams
     membership_ok = True
@@ -580,10 +592,14 @@ class ReviewQueue:
             checked = item.get("checked_at")
             expired = not checked or (datetime.now(timezone.utc) - datetime.fromisoformat(checked)).total_seconds() > self.config["pollSeconds"] * 3
             current = snapshot(item) if item.get("head_sha") else None
+            github = item.get("github_review")
+            github_current = bool(github and item.get("head_sha") and github.get("commit") == item["head_sha"])
             item["freshness"] = "unknown" if item["error"] or expired else (
-                "current" if completed and completed == current else "stale" if completed else "unreviewed"
+                "current" if (completed and completed == current) or github_current
+                else "stale" if completed or github else "unreviewed"
             )
-            if not completed and session and (session.current_head != item.get("head_sha") or session.base_ref != item.get("base_sha")):
+            if (not completed and not github_current and session
+                    and (session.current_head != item.get("head_sha") or session.base_ref != item.get("base_sha"))):
                 if item["freshness"] != "unknown":
                     item["freshness"] = "stale"
             if (item["freshness"] == "unreviewed" and session

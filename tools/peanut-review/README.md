@@ -659,7 +659,8 @@ from the PR timeline; team requests must match a team of the selected account.
 Direct takes precedence when both apply. Tracked PRs without a known request
 origin show **No known request** and remain visible under **All request types**.
 The separate **Review requested** status filter still selects pending requests.
-**Hide PRs I approved**, **Hide drafts**, **Hide stale**, **Hide my PRs**
+**Hide PRs I approved**, **Hide PRs I reviewed** (hides PRs whose head commit
+has your GitHub review, in any state), **Hide drafts**, **Hide stale**, **Hide my PRs**
 (on by default; hides PRs authored by the queue's account), and the
 **Repositories** and **Labels** selections are remembered in the browser.
 Selecting no repository or label shows all of them; a PR matches when it has
@@ -907,6 +908,12 @@ it does not infer a process exit or recover legacy signals without run records.
 This also works when the dashboard is stopped. A push during a review
 leaves the completed result stale; fetching or synchronizing alone cannot mark
 it reviewed. Stale polling or an API failure produces **Unknown**.
+
+Reviews you submit on GitHub count too, with or without a peanut-review
+session. Your latest review that was not dismissed makes a PR **Current** when
+it is on the head commit and **Stale** after new commits. The row shows
+**Changes requested by you** or **Commented by you**; an approval shows as
+**Approved by you**.
 
 Older recorded queue completions remain valid. Legacy sessions containing only
 completion signals cannot prove which revision was reviewed and remain
