@@ -32,6 +32,46 @@
     try { localStorage.setItem(HIDE_KEY, JSON.stringify(prefs)); } catch { /* optional */ }
   }
 
+  const REPOS_KEY = "pr.queue.repos";
+  let repos = new Set();
+  try {
+    const saved = JSON.parse(localStorage.getItem(REPOS_KEY) || "[]");
+    if (Array.isArray(saved)) repos = new Set(saved.filter((repo) => typeof repo === "string"));
+  } catch { /* optional */ }
+  function saveRepos() {
+    try { localStorage.setItem(REPOS_KEY, JSON.stringify([...repos])); } catch { /* optional */ }
+  }
+  let repoChoices = null;
+  function renderRepos() {
+    // Keep saved repositories listed even when they currently have no PRs.
+    const names = new Map();
+    for (const item of data.items) names.set(item.repo.toLowerCase(), item.repo);
+    for (const repo of repos) if (!names.has(repo)) names.set(repo, repo);
+    const sorted = [...names.entries()].sort(([a], [b]) => a.localeCompare(b));
+    const choices = sorted.map(([repo]) => repo).join("\n");
+    if (choices !== repoChoices) {
+      // Rebuild only when the set changes so polling does not disturb an open list.
+      repoChoices = choices;
+      const list = byId("queue-repos-list");
+      list.replaceChildren();
+      for (const [repo, label] of sorted) {
+        const box = node("input");
+        box.type = "checkbox";
+        box.checked = repos.has(repo);
+        box.addEventListener("change", () => {
+          if (box.checked) repos.add(repo); else repos.delete(repo);
+          saveRepos();
+          render();
+        });
+        const row = node("label", null, "queue-toggle");
+        row.append(box, ` ${label}`);
+        list.append(row);
+      }
+    }
+    byId("queue-repos-summary").textContent = repos.size === 0 ? "All repositories"
+      : repos.size === 1 ? names.get([...repos][0]) : `${repos.size} repositories`;
+  }
+
   function node(tag, text, className = "") {
     const element = document.createElement(tag);
     if (text != null) element.textContent = text;
@@ -65,6 +105,7 @@
     const query = byId("queue-search").value.trim().toLowerCase();
     const account = byId("queue-account").value;
     if (account && item.account_key !== account) return false;
+    if (repos.size && !repos.has(item.repo.toLowerCase())) return false;
     const requestType = byId("queue-request-type").value;
     if (requestType && requestType !== item.request_kind) return false;
     if (query && !`${item.repo} ${item.number} ${item.title || ""} ${item.author || ""}`.toLowerCase().includes(query)) return false;
@@ -92,6 +133,7 @@
       accounts.append(card);
     }
     byId("queue-account").value = selected;
+    renderRepos();
     const rows = data.items.filter(visible);
     byId("queue-count").textContent = `${rows.length} of ${data.items.length} PRs`;
     byId("queue-refresh").disabled = submitting || data.refreshing;
@@ -177,6 +219,15 @@
   byId("queue-request-type").addEventListener("change", render);
   byId("queue-filter").addEventListener("change", render);
   for (const box of Object.values(toggles)) box.addEventListener("change", () => { saveToggles(); render(); });
+  byId("queue-repos-clear").addEventListener("click", () => {
+    repos.clear();
+    repoChoices = null;
+    saveRepos();
+    render();
+  });
+  document.addEventListener("click", (event) => {
+    if (!byId("queue-repos").contains(event.target)) byId("queue-repos").open = false;
+  });
   if (window.PR_QUEUE_ENABLED) {
     refresh();
     setInterval(refresh, 3000);
