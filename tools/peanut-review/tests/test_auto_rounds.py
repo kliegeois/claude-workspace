@@ -341,8 +341,12 @@ def test_editor_launch_uses_its_checkout_and_prompt(session_dir: Path, repo: Pat
         assert "non-interactive code editor agent" in prompt
         assert f"Workspace: `{worktree}`" in prompt
         assert result["supervisor_cmd"][result["supervisor_cmd"].index("--cwd") + 1] == str(worktree)
-        deny = json.loads((worktree / ".cursor" / "cli.json").read_text())["permissions"]["deny"]
-        assert "Shell(git push **)" in deny and "Shell(git commit **)" in deny
+        allow = json.loads((worktree / ".cursor" / "cli.json").read_text())["permissions"]["allow"]
+        shell = [entry for entry in allow if entry.startswith("Shell(")]
+        prefix = f"Shell({auto_rounds.PR_BIN} --session {session_dir.resolve()} "
+        assert shell and all(entry.startswith(prefix) for entry in shell)
+        commands = [entry[len(prefix):-1] for entry in shell]
+        assert sorted(commands) == sorted(auto_rounds.EDITOR_COMMANDS)
     finally:
         assert auto_rounds._remove_editor_worktree(session_dir, str(repo))
 
@@ -383,7 +387,7 @@ def test_editor_is_allowlist_only_and_cursor_only(session_dir: Path, repo: Path)
         [reviewer] = launch.launch_agents(session_dir, dry_run=True, agent_names=["Ada"])
         assert "--allowlist-only" not in reviewer["cmd"]
         allow = json.loads((worktree / ".cursor" / "cli.json").read_text())["permissions"]["allow"]
-        assert f"Shell({auto_rounds.PR_BIN} **)" in allow
+        assert f"Shell({auto_rounds.PR_BIN} --session {session_dir.resolve()} resolve **)" in allow
     finally:
         auto_rounds._remove_editor_worktree(session_dir, str(repo))
     errors: list[str] = []
@@ -392,3 +396,58 @@ def test_editor_is_allowlist_only_and_cursor_only(session_dir: Path, repo: Path)
         personas_dir=None, ssh_target_names=set(), errors=errors,
     )
     assert any("must be 'cursor' for editor" in e for e in errors)
+
+
+def test_rebuttals_get_another_review_and_history_is_kept(session_dir: Path, repo: Path, fake: FakeAgents):
+    fake.editor_edits = False
+    state = auto_rounds.run(session_dir, 2)
+    assert [r["status"] for r in state["rounds"]] == ["rebutted", "rebutted"]
+    assert state["status"] == "done" and "have not checked" in state["reason"]
+
+    fake.editor_edits = True
+    state = auto_rounds.run(session_dir, 1)
+    assert [r["number"] for r in state["rounds"]] == [1, 2, 3]
+    assert state["rounds"][-1]["status"] == "committed"
+    assert auto_rounds.round_range(session_dir, 3)[1] == _git(repo, "rev-parse", "HEAD")
+
+
+def test_checkout_moved_between_rounds_blocks(session_dir: Path, repo: Path, fake: FakeAgents, monkeypatch):
+    original = fake.curate
+
+    def curate(sdir, **kwargs):
+        if not any(c[0] == "Curator" for c in fake.calls):
+            _git(repo, "checkout", "-q", "-b", "elsewhere", "HEAD~1")
+        return original(sdir, **kwargs)
+
+    monkeypatch.setattr(auto_rounds.launch, "launch_curator", curate)
+    state = auto_rounds.run(session_dir, 3)
+    assert state["status"] == "blocked"
+
+
+def test_timeout_kills_the_agents_it_waited_for(session_dir: Path, monkeypatch):
+    killed = []
+    monkeypatch.setattr(auto_rounds.polling, "wait_round_completion", lambda *a, **k: ([], ["Ada"]))
+    monkeypatch.setattr(auto_rounds, "_kill", lambda sdir, names=None: killed.append(names))
+    with pytest.raises(TimeoutError):
+        auto_rounds._wait(session_dir, ["Ada"], 0, 0)
+    assert killed == [["Ada"]]
+
+
+def test_round_commit_skips_hooks(session_dir: Path, repo: Path, fake: FakeAgents):
+    hooks = Path(_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")) / "hooks"
+    hooks.mkdir(exist_ok=True)
+    (hooks / "pre-commit").write_text("#!/bin/sh\nexit 1\n")
+    (hooks / "pre-commit").chmod(0o755)
+    state = auto_rounds.run(session_dir, 1)
+    assert state["rounds"][0]["status"] == "committed"
+
+
+def test_round_view_folds_use_the_round_diff(session_dir: Path, fake: FakeAgents):
+    auto_rounds.run(session_dir, 3)
+    srv, base, _token = _serve([session_dir.parent])
+    try:
+        code, raw = _request(f"{base}/local-1/api/diff/fold?file=src/a.py&start=0&end=5&round=1")
+        assert code == 200, raw
+        assert _request(f"{base}/local-1/api/diff/fold?file=src/a.py&start=0&end=5&round=9")[0] == 404
+    finally:
+        srv.shutdown()

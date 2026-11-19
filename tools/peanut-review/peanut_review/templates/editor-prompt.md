@@ -35,21 +35,16 @@ This is a detached checkout made for you at the reviewed head. Edit files
 only inside it. The orchestrator commits your changes after you finish, as one
 commit for this round, and moves the developer's branch to it. Therefore:
 
-- Do not run `git commit`, `git push`, `git reset`, `git checkout`,
-  `git restore`, `git stash`, `git clean`, `git rebase`, `git merge`,
-  `git branch`, `git tag`, or `git worktree`.
-- Do not create files outside the repository other than under `${SCRATCH_DIR}`.
-- Do not edit `.cursor/`.
+- Edit files only inside this checkout, and write notes only under
+  `${SCRATCH_DIR}`. Never write anywhere else, and do not edit `.cursor/` or
+  `.git`.
+- Use your read, search, and edit tools for files. Your shell runs only the
+  peanut-review commands shown below, for this session; every other command,
+  including git, builds, and tests, is rejected. Do not try to work around a
+  rejection. Reviewers build and test your changes in the next round.
 
-Only allow-listed shell commands run: the peanut-review CLI, read-only git
-(`diff`, `status`, `log`, `show`, `blame`, `rev-parse`), file inspection
-(`cat`, `ls`, `rg`, ...), and `pytest` / `py_compile`. Anything else is
-rejected; do not try to work around a rejection.
-
-The change under review:
-```
-${GIT_DIFF_COMMANDS}
-```
+The change under review, as a patch against its base, is in
+`${SCRATCH_DIR}/change.patch`. Read it with your read tool.
 
 # Findings to address
 
@@ -88,14 +83,12 @@ if a fix or rebuttal does not hold, so be accurate rather than agreeable.
 If a body contains backticks or `$(...)`, write it to a file under
 `${SCRATCH_DIR}` and pass `--body-file`, so the shell does not eat it.
 
-When it is cheap, run the relevant tests or a syntax check on what you changed
-and record the result:
+Record anything the developer should know, such as a fix you could not
+verify, in a note:
 
 ```
-${PR_BIN} --session ${SESSION} note --message "## Editor checks: <what you ran and results>"
+${PR_BIN} --session ${SESSION} note --message "## Editor notes: <what to check>"
 ```
-
-This checkout has no build directory; do not start a long full build.
 
 # Finish
 

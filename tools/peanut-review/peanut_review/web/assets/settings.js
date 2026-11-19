@@ -31,7 +31,7 @@
         + `<p class="error">${esc(config.error)}</p></section>`;
     }
     const rows = config.agents.map((a) => `<tr>`
-      + `<td><input type="checkbox" data-enabled="${attrEsc(a.name)}"${a.enabled ? " checked" : ""}${a.role === "curator" ? " disabled title=\"The curator is required\"" : ""} aria-label="Enable ${attrEsc(a.name)}"></td>`
+      + `<td><input type="checkbox" data-enabled="${attrEsc(a.name)}"${a.enabled || a.role === "curator" ? " checked" : ""}${a.role === "curator" ? " disabled title=\"The curator is required\"" : ""} aria-label="Enable ${attrEsc(a.name)}"></td>`
       + `<td class="agent-name">${esc(a.name)}</td>`
       + `<td>${esc(a.role)}</td>`
       + `<td class="mono">${esc(a.persona || "—")}</td>`

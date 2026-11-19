@@ -394,7 +394,7 @@
       return;
     }
     const rows = agents.map((a) => `<label class="local-agent">`
-      + `<input type="checkbox" data-agent="${attrEsc(a.name)}"${a.enabled ? " checked" : ""}${a.role === "curator" ? " disabled title=\"The curator is required\"" : ""}> `
+      + `<input type="checkbox" data-agent="${attrEsc(a.name)}"${a.enabled || a.role === "curator" ? " checked" : ""}${a.role === "curator" ? " disabled title=\"The curator is required\"" : ""}> `
       + `<span class="agent-name">${esc(a.name)}</span> <span class="sub">${esc(a.role)}${a.persona ? " · " + esc(a.persona) : ""}</span> `
       + `<input class="mono local-agent-model" list="local-model-options" data-model="${attrEsc(a.name)}" value="${attrEsc(a.model)}" aria-label="${attrEsc(a.name)} model">`
       + `</label>`).join("");

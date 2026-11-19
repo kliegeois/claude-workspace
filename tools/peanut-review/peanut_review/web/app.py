@@ -1111,8 +1111,18 @@ class _Handler(BaseHTTPRequestHandler):
 
         end = min(end, start + MAX_DIFF_FOLD_FETCH_LINES)
         s = load_session(session_dir)
+        diff_base, diff_head = s.base_ref, s.topic_ref
+        round_param = q.get("round", [""])[0]
+        if round_param:
+            selected = (
+                auto_rounds.round_range(session_dir, int(round_param))
+                if round_param.isascii() and round_param.isdigit() else None
+            )
+            if selected is None:
+                return self._error(404, f"no committed round {round_param}")
+            diff_base, diff_head = selected
         try:
-            files = diffmod.parse_diff(review_repo_path(s), s.base_ref, s.topic_ref)
+            files = diffmod.parse_diff(review_repo_path(s), diff_base, diff_head)
         except RuntimeError as e:
             return self._error(409, f"cannot render pinned review diff: {e}")
         fd = next((f for f in files if f.path == file_path), None)

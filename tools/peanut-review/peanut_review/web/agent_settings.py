@@ -57,8 +57,8 @@ def list_models(*, refresh: bool = False) -> list[dict]:
             models = parse_model_list(result.stdout) if result.returncode == 0 else []
         except (OSError, subprocess.TimeoutExpired):
             models = []
-        if models:
-            _models_cache = (time.monotonic(), models)
+        # Cache failures briefly so page loads do not rerun a slow, failing listing.
+        _models_cache = (time.monotonic() - (0 if models else MODELS_TTL_SECONDS - 60), models)
         return models
 
 

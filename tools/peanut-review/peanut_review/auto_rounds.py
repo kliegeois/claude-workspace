@@ -16,6 +16,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -50,6 +51,10 @@ TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 SUMMARY_LIMIT = 4000
 DRIVER_TOKEN_ENV = "PEANUT_AUTO_ROUNDS_TOKEN"
 PR_BIN = Path(__file__).resolve().parent.parent / "bin" / "peanut-review"
+EDITOR_COMMANDS = ("status", "comments **", "add-comment **", "resolve **", "note **", "signal round-done")
+# The driver's own git calls in the Editor's checkout must not run hooks or
+# helpers the Editor could have configured.
+SAFE_GIT = ("-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false")
 
 
 class Stopped(Exception):
@@ -168,6 +173,14 @@ def _check_runnable(session) -> tuple[list, object]:
     return reviewers, editors[0]
 
 
+def _kill(session_dir: Path, names: list[str] | None = None) -> None:
+    from . import agent_control
+    try:
+        agent_control.kill_agents(session_dir, agent_names=names)
+    except (OSError, ValueError, RuntimeError):
+        pass
+
+
 def _wait(session_dir: Path, names: list[str], timeout: int, poll: float) -> list[str]:
     deadline = time.monotonic() + timeout
     while True:
@@ -177,10 +190,10 @@ def _wait(session_dir: Path, names: list[str], timeout: int, poll: float) -> lis
         if not unfinished:
             return failed
         if (session_dir / STOP_FILE).exists():
-            from . import agent_control
-            agent_control.kill_agents(session_dir, agent_names=unfinished)
+            _kill(session_dir, unfinished)
             raise Stopped()
         if time.monotonic() >= deadline:
+            _kill(session_dir, unfinished)
             raise TimeoutError(f"timed out waiting for {', '.join(unfinished)}")
 
 
@@ -190,7 +203,7 @@ def _check_stop(session_dir: Path) -> None:
 
 
 def _status_without_cursor(worktree: Path) -> str:
-    return _git(worktree, "status", "--porcelain", "--", ".", ":(exclude).cursor").stdout.strip()
+    return _git(worktree, *SAFE_GIT, "status", "--porcelain", "--", ".", ":(exclude).cursor").stdout.strip()
 
 
 def _prepare_editor_worktree(session_dir: Path, repo: str, head: str) -> Path:
@@ -199,7 +212,7 @@ def _prepare_editor_worktree(session_dir: Path, repo: str, head: str) -> Path:
     if (worktree / ".git").exists():
         if _status_without_cursor(worktree):
             raise RuntimeError(f"Editor checkout has uncommitted changes: {worktree}")
-        _git(worktree, "checkout", "--quiet", "--detach", head)
+        _git(worktree, *SAFE_GIT, "checkout", "--quiet", "--detach", head)
     else:
         _git(repo, "worktree", "add", "--quiet", "--detach", "--no-checkout", str(worktree), head)
         sparse = _git(repo, "config", "--bool", "core.sparseCheckout", check=False).stdout.strip()
@@ -218,9 +231,16 @@ def _prepare_editor_worktree(session_dir: Path, repo: str, head: str) -> Path:
         raise RuntimeError("the repository tracks .cursor/cli.json; the Editor needs its own permissions file")
     (worktree / ".cursor").mkdir(exist_ok=True)
     permissions = json.loads((TEMPLATES_DIR / "editor-cli.json").read_text())
-    permissions["permissions"]["allow"] += [f"Shell({PR_BIN})", f"Shell({PR_BIN} **)"]
+    prefix = f"{shlex.quote(str(PR_BIN))} --session {shlex.quote(str(Path(session_dir).resolve()))}"
+    permissions["permissions"]["allow"] += [f"Shell({prefix} {command})" for command in EDITOR_COMMANDS]
     (worktree / ".cursor" / "cli.json").write_text(json.dumps(permissions, indent=2) + "\n")
     return worktree
+
+
+def _write_change_patch(session, scratch: Path, head: str) -> None:
+    patch = _git(repo_path(session), "diff", "--no-ext-diff", "--no-textconv",
+                 f"{session.base_ref}...{head}", timeout=300).stdout
+    (scratch / "change.patch").write_text(patch)
 
 
 def _remove_editor_worktree(session_dir: Path, repo: str) -> bool:
@@ -245,8 +265,9 @@ def _commit_env() -> dict[str, str]:
 
 
 def _commit_round(session_dir: Path, session, worktree: Path, editor_name: str, number: int) -> str | None:
-    _git(worktree, "add", "--all", "--", ".", ":(exclude).cursor")
-    if _git(worktree, "diff", "--cached", "--quiet", check=False).returncode == 0:
+    _git(worktree, *SAFE_GIT, "add", "--all", "--", ".", ":(exclude).cursor")
+    if _git(worktree, *SAFE_GIT, "diff", "--cached", "--quiet", "--no-ext-diff",
+            check=False).returncode == 0:
         return None
     summary_path = session_dir / "tmp" / editor_name / "round-summary.md"
     try:
@@ -258,7 +279,8 @@ def _commit_round(session_dir: Path, session, worktree: Path, editor_name: str, 
     if summary:
         message += summary + "\n\n"
     message += f"Peanut-Review-Session: {session.id}\nPeanut-Review-Round: {number}\n"
-    _git(worktree, "commit", "--quiet", "--file", "-", stdin=message, env=_commit_env())
+    _git(worktree, *SAFE_GIT, "commit", "--quiet", "--no-verify", "--file", "-",
+         stdin=message, env=_commit_env())
     head = _git(worktree, "rev-parse", "HEAD").stdout.strip()
     _git(worktree, "update-ref", f"refs/peanut-review/{review_git_namespace(session)}/{head}", head)
     return head
@@ -317,7 +339,10 @@ def run(session_dir: str | Path, max_rounds: int, *, poll: float = 5.0) -> dict:
                 (sdir / STOP_FILE).unlink()
             except FileNotFoundError:
                 pass
+        state["rounds"] = list((existing or {}).get("rounds", []))
         _write_loop(sdir, state)
+    first = max((r.get("number", 0) for r in state["rounds"]), default=0) + 1
+    expected_head = None
 
     def update_round(record: dict, **changes) -> None:
         record.update(changes)
@@ -325,11 +350,16 @@ def run(session_dir: str | Path, max_rounds: int, *, poll: float = 5.0) -> dict:
 
     timeout = session.timeout + WAIT_SLACK_SECONDS
     try:
-        for number in range(1, max_rounds + 1):
+        for number in range(first, first + max_rounds):
             _check_stop(sdir)
             session = load_session(sdir)
             reviewers, editor = _check_runnable(session)
             head_before = resolve_git_ref(repo, "HEAD")
+            if expected_head and head_before != expected_head:
+                state.update(status="blocked", reason=(
+                    f"your checkout moved to {head_before[:12]} after round {number - 1}; "
+                    "start new rounds when it is where you want them"))
+                break
             if head_before != session.current_head:
                 _migrate(sdir, head_before)
             record = {"number": number, "status": "reviewing", "head_before": head_before,
@@ -365,7 +395,9 @@ def run(session_dir: str | Path, max_rounds: int, *, poll: float = 5.0) -> dict:
             _check_stop(sdir)
             update_round(record, status="editing")
             worktree = _prepare_editor_worktree(sdir, repo, head_before)
-            (sdir / "tmp" / editor.name).mkdir(parents=True, exist_ok=True)
+            scratch = sdir / "tmp" / editor.name
+            scratch.mkdir(parents=True, exist_ok=True)
+            _write_change_patch(load_session(sdir), scratch, head_before)
             launch.rerun_agents(sdir, agent_names=[editor.name], workspace_override=str(worktree))
             if _wait(sdir, [editor.name], timeout, poll):
                 raise RuntimeError(f"the Editor failed; its partial edits are in {worktree}")
@@ -373,13 +405,15 @@ def run(session_dir: str | Path, max_rounds: int, *, poll: float = 5.0) -> dict:
             head_after = _commit_round(sdir, load_session(sdir), worktree, editor.name, number)
             if head_after is None:
                 left = len(open_findings(sdir))
-                update_round(record, status="no-changes", finished_at=_now())
                 if left:
+                    update_round(record, status="no-changes", finished_at=_now())
                     state.update(status="blocked", reason=(
                         f"the Editor made no changes and left {left} finding(s) open for you"))
-                else:
-                    state.update(status="converged", reason="the Editor rebutted every finding without edits")
-                break
+                    break
+                # Rebuttals only end the loop once reviewers have seen them.
+                update_round(record, status="rebutted", finished_at=_now())
+                expected_head = head_before
+                continue
             update_round(record, head_after=head_after)
             blocked = _fast_forward(repo, head_before, head_after)
             if blocked:
@@ -389,12 +423,18 @@ def run(session_dir: str | Path, max_rounds: int, *, poll: float = 5.0) -> dict:
                     f"Apply it with: git merge --ff-only {head_after}"))
                 break
             _migrate(sdir, head_after)
+            expected_head = head_after
             update_round(record, status="committed", finished_at=_now())
         else:
-            state.update(status="done", reason=f"ran the maximum of {max_rounds} rounds")
+            reason = f"ran the maximum of {max_rounds} rounds"
+            if state["rounds"] and state["rounds"][-1].get("status") in {"committed", "rebutted"}:
+                reason += "; reviewers have not checked the last round's edits or rebuttals"
+            state.update(status="done", reason=reason)
     except Stopped:
+        _kill(sdir)
         state.update(status="stopped", reason="stopped from the dashboard")
     except Exception as exc:  # recorded for the dashboard, then re-raised for the log
+        _kill(sdir)
         state.update(status="failed", reason=str(exc))
         state["finished_at"] = _now()
         _write_loop(sdir, state)
@@ -429,16 +469,24 @@ def spawn_driver(session_dir: str | Path, max_rounds: int) -> int:
         except FileNotFoundError:
             pass
         token = secrets.token_hex(16)
-        _write_loop(sdir, {"status": "starting", "pid": None, "spawned_at": time.time(),
-                           "token": token, "started_at": _now(), "finished_at": None,
-                           "max_rounds": max_rounds, "reason": "", "rounds": []})
+        starting = {"status": "starting", "pid": None, "spawned_at": time.time(),
+                    "token": token, "started_at": _now(), "finished_at": None,
+                    "max_rounds": max_rounds, "reason": "",
+                    "rounds": (existing or {}).get("rounds", [])}
+        _write_loop(sdir, starting)
         env = {**os.environ, DRIVER_TOKEN_ENV: token}
-        with open(sdir / "log" / LOG_NAME, "a") as log:
-            proc = subprocess.Popen(
-                [str(PR_BIN), "--session", str(sdir), "auto-rounds", "--rounds", str(max_rounds)],
-                stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                cwd=str(sdir), start_new_session=True, env=env,
-            )
+        try:
+            with open(sdir / "log" / LOG_NAME, "a") as log:
+                proc = subprocess.Popen(
+                    [str(PR_BIN), "--session", str(sdir), "auto-rounds", "--rounds", str(max_rounds)],
+                    stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                    cwd=str(sdir), start_new_session=True, env=env,
+                )
+        except OSError as exc:
+            _write_loop(sdir, {**starting, "status": "failed", "token": None,
+                               "reason": f"could not start the round driver: {exc}",
+                               "finished_at": _now()})
+            raise
     return proc.pid
 
 

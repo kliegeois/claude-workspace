@@ -934,6 +934,7 @@
       start: String(start),
       end: String(end),
     });
+    if (window.PR_ROUND_VIEW) params.set("round", String(window.PR_ROUND_VIEW));
     return api("GET", `/api/diff/fold?${params.toString()}`);
   }
 
@@ -1748,7 +1749,7 @@
     } catch { /* fall back to the last poll */ }
     const agents = lastAgents;
     agentConfigBody.innerHTML = agents.map((a) => `<label class="local-agent">`
-      + `<input type="checkbox" data-agent="${attrEsc(a.name)}"${a.enabled === false ? "" : " checked"}${a.role === "curator" ? " disabled title=\"The curator is required\"" : ""}> `
+      + `<input type="checkbox" data-agent="${attrEsc(a.name)}"${a.enabled === false && a.role !== "curator" ? "" : " checked"}${a.role === "curator" ? " disabled title=\"The curator is required\"" : ""}> `
       + `<span class="agent-name">${esc(a.name)}</span> <span class="sub">${esc(a.role || "reviewer")}${a.persona ? " · " + esc(a.persona) : ""}</span> `
       + `<input class="mono local-agent-model" list="agent-model-options" data-model="${attrEsc(a.name)}" value="${attrEsc(a.model || "")}" aria-label="${attrEsc(a.name)} model">`
       + `</label>`).join("") || "<p>(no agents)</p>";
@@ -1798,7 +1799,9 @@
     const sig = loopSignature(loop);
     if (sig === loopSig) return;
     loopSig = sig;
-    if (document.querySelector(".new-comment, dialog[open]")) {
+    const drafting = document.querySelector(".new-comment, .edit-form, dialog[open]")
+      || Array.from(document.querySelectorAll("textarea")).some((t) => t.value.trim());
+    if (drafting) {
       flashToast("Automatic rounds updated; reload to see the latest diff", 6000);
     } else {
       location.reload();
@@ -1820,6 +1823,11 @@
     } catch (e) {
       err.textContent = e.message;
       err.hidden = false;
+      const stop = document.getElementById("rounds-stop-btn");
+      if (stop) {
+        stop.disabled = false;
+        stop.textContent = "Stop";
+      }
     }
   }
 

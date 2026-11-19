@@ -1630,6 +1630,8 @@ def render_page(
     script_url = html.escape(_asset_url(base_url, "app.js"), quote=True)
 
     index_href = base_url if base_url else "/"
+    if session.github is None:
+        index_href = f"{base_url}/local"
     return f"""<!doctype html>
 <html lang="en">
 <head>

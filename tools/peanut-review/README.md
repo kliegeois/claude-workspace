@@ -277,7 +277,8 @@ write code):
   root. Other keys in the file are kept as written. Model suggestions come from
   `cursor-agent --list-models`; any model ID can be typed.
 - **configure** in a session's Agents panel changes that session only. It is
-  refused while one of the session's agents is running.
+  refused while one of the session's agents or its automatic rounds are
+  running.
 
 Cursor runners need permissions in the actual reviewed workspace before
 `launch`, including each new worktree. A `.cursor/cli.json` in the enclosing
@@ -524,16 +525,23 @@ each one, replying on and resolving the threads it handled. It works in a
 detached checkout at `<session>/editor-worktree` that copies your sparse
 checkout and has its own `.cursor/cli.json` (from
 `templates/editor-cli.json`). The Editor must use the `cursor` runner, which
-runs it without `--force`, so only the allow list applies: it can edit files
-and run the peanut-review CLI, read-only git, file inspection, and `pytest`,
-and every other command (commits, pushes, `bash -c`, `gh`, ...) is rejected.
-The driver then commits its edits as one commit with your git identity, keeps
-it reachable under `refs/peanut-review/`, fast-forwards your checkout to it,
-and runs the equivalent of `migrate`.
+runs it without `--force`, so only allow-listed shell commands run. Its shell
+allow list holds only the peanut-review subcommands it needs for its own
+session (`status`, `comments`, `add-comment`, `resolve`, `note`, `signal
+round-done`); git, builds, tests, `bash -c`, pushes, and `gh` are rejected.
+It reads the change from a patch the driver writes into its scratch
+directory. Cursor's file tools are not confined by the permissions file or by
+`--sandbox`, so the Editor could in principle write outside its checkout; it
+is told not to, and this is still narrower than reviewers, which run with
+`--force`. The driver then commits its edits as one commit with your git
+identity (without hooks), keeps it reachable under `refs/peanut-review/`,
+fast-forwards your checkout to it, and runs the equivalent of `migrate`.
 
 Rounds stop when the curator leaves no unresolved findings, when the Editor
-changes nothing (reported as needing you if findings are still open), or
-after `--rounds` rounds (at most 10). They also stop,
+changes nothing while findings are still open (reported as needing you), or
+after `--rounds` rounds (at most 10). When the Editor rebuts every finding
+without edits, the next round still runs so reviewers can check the
+rebuttals. They also stop,
 without moving your branch, if your checkout gained uncommitted changes or a
 new HEAD during the round; the commit is kept and the status shows the
 `git merge --ff-only` command to apply it. Nothing is pushed.
