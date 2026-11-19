@@ -33,6 +33,7 @@ from .session import (
     resolve_git_ref,
     retain_review_git,
     retarget_review_head,
+    review_git_namespace,
     save_session,
 )
 
@@ -47,6 +48,8 @@ ACTIVE_STATES = {"starting", "running"}
 STARTING_GRACE_SECONDS = 120
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 SUMMARY_LIMIT = 4000
+DRIVER_TOKEN_ENV = "PEANUT_AUTO_ROUNDS_TOKEN"
+PR_BIN = Path(__file__).resolve().parent.parent / "bin" / "peanut-review"
 
 
 class Stopped(Exception):
@@ -119,6 +122,7 @@ def loop_status(session_dir: str | Path) -> dict | None:
     if data.get("status") in ACTIVE_STATES and not running:
         data = {**data, "status": "interrupted",
                 "reason": "the round driver exited unexpectedly; see log/auto-rounds.log"}
+    data = {key: value for key, value in data.items() if key != "token"}
     return {**data, "running": running,
             "stop_requested": (Path(session_dir) / STOP_FILE).exists()}
 
@@ -154,11 +158,13 @@ def _check_runnable(session) -> tuple[list, object]:
     reviewers = curator.reviewers(session.agents)
     if not reviewers:
         raise ValueError("no enabled reviewer agents")
+    if not curator.curators(session.agents):
+        raise ValueError("no enabled curator agent")
     editors = curator.editors(session.agents)
     if not editors:
         raise ValueError("no enabled Editor agent; add one in Settings or the session's agent settings")
-    if editors[0].ssh_target:
-        raise ValueError("the Editor must run locally")
+    if editors[0].ssh_target or editors[0].runner != "cursor":
+        raise ValueError("the Editor must use the local cursor runner, which enforces its allow list")
     return reviewers, editors[0]
 
 
@@ -198,15 +204,22 @@ def _prepare_editor_worktree(session_dir: Path, repo: str, head: str) -> Path:
         _git(repo, "worktree", "add", "--quiet", "--detach", "--no-checkout", str(worktree), head)
         sparse = _git(repo, "config", "--bool", "core.sparseCheckout", check=False).stdout.strip()
         if sparse == "true":
+            # Copy the pattern file itself: `sparse-checkout set` flag syntax
+            # and its default mode differ across git versions.
             cone = _git(repo, "config", "--bool", "core.sparseCheckoutCone", check=False).stdout.strip()
-            patterns = _git(repo, "sparse-checkout", "list").stdout
-            _git(worktree, "sparse-checkout", "init", *(["--cone"] if cone == "true" else []))
-            _git(worktree, "sparse-checkout", "set", "--stdin", stdin=patterns)
+            source = _git(repo, "rev-parse", "--path-format=absolute",
+                          "--git-path", "info/sparse-checkout").stdout.strip()
+            _git(worktree, "sparse-checkout", "init", "--cone" if cone == "true" else "--no-cone")
+            target = _git(worktree, "rev-parse", "--path-format=absolute",
+                          "--git-path", "info/sparse-checkout").stdout.strip()
+            shutil.copyfile(source, target)
         _git(worktree, "checkout", "--quiet", "--detach", head)
     if _git(worktree, "ls-files", "--", ".cursor/cli.json").stdout.strip():
         raise RuntimeError("the repository tracks .cursor/cli.json; the Editor needs its own permissions file")
     (worktree / ".cursor").mkdir(exist_ok=True)
-    shutil.copyfile(TEMPLATES_DIR / "editor-cli.json", worktree / ".cursor" / "cli.json")
+    permissions = json.loads((TEMPLATES_DIR / "editor-cli.json").read_text())
+    permissions["permissions"]["allow"] += [f"Shell({PR_BIN})", f"Shell({PR_BIN} **)"]
+    (worktree / ".cursor" / "cli.json").write_text(json.dumps(permissions, indent=2) + "\n")
     return worktree
 
 
@@ -246,7 +259,9 @@ def _commit_round(session_dir: Path, session, worktree: Path, editor_name: str, 
         message += summary + "\n\n"
     message += f"Peanut-Review-Session: {session.id}\nPeanut-Review-Round: {number}\n"
     _git(worktree, "commit", "--quiet", "--file", "-", stdin=message, env=_commit_env())
-    return _git(worktree, "rev-parse", "HEAD").stdout.strip()
+    head = _git(worktree, "rev-parse", "HEAD").stdout.strip()
+    _git(worktree, "update-ref", f"refs/peanut-review/{review_git_namespace(session)}/{head}", head)
+    return head
 
 
 def _fast_forward(repo: str, head_before: str, head_after: str) -> str | None:
@@ -283,20 +298,26 @@ def run(session_dir: str | Path, max_rounds: int, *, poll: float = 5.0) -> dict:
         raise ValueError(f"rounds must be between 1 and {MAX_ROUNDS}")
     session = load_session(sdir)
     reviewers, editor = _check_runnable(session)
-    existing = read_loop(sdir)
-    if existing and existing.get("status") == "running" and _pid_alive(existing.get("pid")):
-        raise ValueError("automatic rounds are already running for this session")
     repo = repo_path(session)
     state = {
         "status": "running", "pid": os.getpid(), "started_at": _now(), "finished_at": None,
         "max_rounds": max_rounds, "reason": "", "rounds": [],
         "editor_worktree": str(sdir / EDITOR_WORKTREE),
     }
-    try:
-        (sdir / STOP_FILE).unlink()
-    except FileNotFoundError:
-        pass
-    _write_loop(sdir, state)
+    with _session_lock(sdir):
+        existing = read_loop(sdir)
+        spawned_for_us = bool(
+            existing and existing.get("status") == "starting"
+            and existing.get("token") and existing.get("token") == os.environ.get(DRIVER_TOKEN_ENV)
+        )
+        if existing and _is_live(existing) and not spawned_for_us:
+            raise ValueError("automatic rounds are already running for this session")
+        if not spawned_for_us:
+            try:
+                (sdir / STOP_FILE).unlink()
+            except FileNotFoundError:
+                pass
+        _write_loop(sdir, state)
 
     def update_round(record: dict, **changes) -> None:
         record.update(changes)
@@ -335,7 +356,10 @@ def run(session_dir: str | Path, max_rounds: int, *, poll: float = 5.0) -> dict:
             update_round(record, open_findings=len(remaining))
             if not remaining:
                 update_round(record, status="converged", finished_at=_now())
-                state.update(status="converged", reason="the curator left no unresolved findings")
+                reason = "the curator left no unresolved findings"
+                if failed:
+                    reason += f", but these reviewers failed this round: {', '.join(failed)}"
+                state.update(status="converged", reason=reason)
                 break
 
             _check_stop(sdir)
@@ -348,8 +372,13 @@ def run(session_dir: str | Path, max_rounds: int, *, poll: float = 5.0) -> dict:
 
             head_after = _commit_round(sdir, load_session(sdir), worktree, editor.name, number)
             if head_after is None:
+                left = len(open_findings(sdir))
                 update_round(record, status="no-changes", finished_at=_now())
-                state.update(status="converged", reason="the Editor made no changes")
+                if left:
+                    state.update(status="blocked", reason=(
+                        f"the Editor made no changes and left {left} finding(s) open for you"))
+                else:
+                    state.update(status="converged", reason="the Editor rebutted every finding without edits")
                 break
             update_round(record, head_after=head_after)
             blocked = _fast_forward(repo, head_before, head_after)
@@ -394,16 +423,21 @@ def spawn_driver(session_dir: str | Path, max_rounds: int) -> int:
         existing = loop_status(sdir)
         if existing and existing["running"]:
             raise ValueError("automatic rounds are already running for this session")
-        pr_bin = Path(__file__).resolve().parent.parent / "bin" / "peanut-review"
         (sdir / "log").mkdir(exist_ok=True)
+        try:
+            (sdir / STOP_FILE).unlink()
+        except FileNotFoundError:
+            pass
+        token = secrets.token_hex(16)
         _write_loop(sdir, {"status": "starting", "pid": None, "spawned_at": time.time(),
-                           "started_at": _now(), "finished_at": None,
+                           "token": token, "started_at": _now(), "finished_at": None,
                            "max_rounds": max_rounds, "reason": "", "rounds": []})
+        env = {**os.environ, DRIVER_TOKEN_ENV: token}
         with open(sdir / "log" / LOG_NAME, "a") as log:
             proc = subprocess.Popen(
-                [str(pr_bin), "--session", str(sdir), "auto-rounds", "--rounds", str(max_rounds)],
+                [str(PR_BIN), "--session", str(sdir), "auto-rounds", "--rounds", str(max_rounds)],
                 stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                cwd=str(sdir), start_new_session=True,
+                cwd=str(sdir), start_new_session=True, env=env,
             )
     return proc.pid
 
@@ -420,6 +454,8 @@ def create_local_session(cfg: dict, workspace: str, base: str, agents: list[dict
         raise ValueError("enable at least one reviewer")
     if "editor" not in roles:
         raise ValueError("enable an Editor agent; add one in Settings first")
+    if "curator" not in roles:
+        raise ValueError("the config needs an enabled curator agent")
     workspace_path = Path(workspace).expanduser().resolve()
     if not workspace_path.is_dir():
         raise ValueError(f"not a directory: {workspace_path}")
@@ -456,5 +492,10 @@ def create_local_session(cfg: dict, workspace: str, base: str, agents: list[dict
     return Path(session_dir)
 
 
-def raise_stopped(_signum, _frame) -> None:
-    raise Stopped()
+def stop_on_signal(session_dir: str | Path):
+    """Signal handler that asks the driver to stop at its next safe point."""
+    stop_file = Path(session_dir) / STOP_FILE
+
+    def handler(_signum, _frame) -> None:
+        stop_file.write_text(_now() + "\n")
+    return handler

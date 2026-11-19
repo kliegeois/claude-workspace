@@ -503,6 +503,8 @@ def _build_agent_cmd(
         cmd.append("--fast-mode" if agent.fast_mode is True else "--no-fast-mode")
     elif agent.runner == "copilot" and agent.reasoning_effort:
         cmd += ["--reasoning-effort", agent.reasoning_effort]
+    elif agent.runner == "cursor" and curator.is_editor(agent):
+        cmd.append("--allowlist-only")
     return cmd
 
 

@@ -142,6 +142,9 @@
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || `Check failed (${r.status})`);
       if (data.error) throw new Error(data.error);
+      button.disabled = false;
+      button.textContent = "Check PR";
+      button.title = `PR is ${data.state || "unknown"} (checked ${data.checked_at || "now"})`;
       await refresh();
     } catch (err) {
       button.disabled = false;
@@ -391,7 +394,7 @@
       return;
     }
     const rows = agents.map((a) => `<label class="local-agent">`
-      + `<input type="checkbox" data-agent="${attrEsc(a.name)}"${a.enabled ? " checked" : ""}> `
+      + `<input type="checkbox" data-agent="${attrEsc(a.name)}"${a.enabled ? " checked" : ""}${a.role === "curator" ? " disabled title=\"The curator is required\"" : ""}> `
       + `<span class="agent-name">${esc(a.name)}</span> <span class="sub">${esc(a.role)}${a.persona ? " · " + esc(a.persona) : ""}</span> `
       + `<input class="mono local-agent-model" list="local-model-options" data-model="${attrEsc(a.name)}" value="${attrEsc(a.model)}" aria-label="${attrEsc(a.name)} model">`
       + `</label>`).join("");

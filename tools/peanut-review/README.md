@@ -267,7 +267,9 @@ their saved agents.
 Set `"enabled": false` on an agent to keep it in the lineup without running it.
 Disabled agents are skipped by `launch`, `rerun`, completion, and progress, and
 naming one explicitly with `--agent` is an error. At least one reviewer must stay
-enabled. You can also change this from the web UI:
+enabled, and the curator cannot be disabled. You can also change this from the
+web UI (on a localhost address only, because these settings start agents that
+write code):
 
 - The **Settings** tab edits `enabled` and `model` in the project config that
   seeds new sessions. It finds configs from `serve --review-config PATH`, the
@@ -521,13 +523,17 @@ findings remain (curator approvals do not count), the Editor fixes or rebuts
 each one, replying on and resolving the threads it handled. It works in a
 detached checkout at `<session>/editor-worktree` that copies your sparse
 checkout and has its own `.cursor/cli.json` (from
-`templates/editor-cli.json`): it can edit files but is denied commits, pushes,
-history changes, deletes, and `gh`. The driver then commits its edits as one
-commit with your git identity, fast-forwards your checkout to it, and runs the
-equivalent of `migrate`.
+`templates/editor-cli.json`). The Editor must use the `cursor` runner, which
+runs it without `--force`, so only the allow list applies: it can edit files
+and run the peanut-review CLI, read-only git, file inspection, and `pytest`,
+and every other command (commits, pushes, `bash -c`, `gh`, ...) is rejected.
+The driver then commits its edits as one commit with your git identity, keeps
+it reachable under `refs/peanut-review/`, fast-forwards your checkout to it,
+and runs the equivalent of `migrate`.
 
 Rounds stop when the curator leaves no unresolved findings, when the Editor
-changes nothing, or after `--rounds` rounds (at most 10). They also stop,
+changes nothing (reported as needing you if findings are still open), or
+after `--rounds` rounds (at most 10). They also stop,
 without moving your branch, if your checkout gained uncommitted changes or a
 new HEAD during the round; the commit is kept and the status shows the
 `git merge --ff-only` command to apply it. Nothing is pushed.

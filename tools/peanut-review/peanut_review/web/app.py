@@ -71,7 +71,9 @@ def _session_revision(session_dir: Path, *, workspace_head: str = "") -> str:
         directory = session_dir / subdir
         if directory.is_dir():
             paths.extend(path for path in directory.iterdir() if path.is_file())
-    return _paths_revision(paths, extra=workspace_head)
+    loop = auto_rounds.loop_status(session_dir)
+    loop_state = f"{loop['status']}:{loop['running']}" if loop else ""
+    return _paths_revision(paths, extra=f"{workspace_head}|{loop_state}")
 
 
 def _session_updated_at(session_dir: Path) -> tuple[int, str]:
@@ -442,9 +444,10 @@ class _Handler(BaseHTTPRequestHandler):
         if length <= 0:
             return {}
         try:
-            return json.loads(self.rfile.read(length))
+            data = json.loads(self.rfile.read(length))
         except json.JSONDecodeError:
             return None
+        return data if isinstance(data, dict) else None
 
     def _resolve_session(self, session_id: str) -> Path | None:
         return self.registry.get(session_id)
@@ -487,17 +490,25 @@ class _Handler(BaseHTTPRequestHandler):
 
     # -------- routing --------
 
-    def _local_queue_request(self) -> bool:
-        if self.queue is None:
-            return True
+    def _is_localhost(self) -> bool:
         try:
             hostname = urlparse("http://" + self.headers.get("Host", "")).hostname
         except ValueError:
             hostname = None
-        if hostname not in {"localhost", "127.0.0.1", "::1"}:
-            self._error(403, "The review queue is only available on localhost")
+        return hostname in {"localhost", "127.0.0.1", "::1"}
+
+    def _local_queue_request(self) -> bool:
+        if self.queue is None or self._is_localhost():
+            return True
+        self._error(403, "The review queue is only available on localhost")
+        return False
+
+    def _writer_action(self, reload_hint: str) -> bool:
+        """Like `_dashboard_action`, and only on localhost: these edit configs or start agents that write code."""
+        if not self._is_localhost():
+            self._error(403, "Agent settings and automatic rounds are only available on localhost")
             return False
-        return True
+        return self._dashboard_action(reload_hint)
 
     def do_GET(self) -> None:  # noqa: N802
         if not self._local_queue_request():
@@ -534,7 +545,10 @@ class _Handler(BaseHTTPRequestHandler):
         if url.path == "/api/settings":
             return self._get_settings()
         if url.path == "/api/models":
-            refresh = parse_qs(url.query).get("refresh", ["0"])[0] == "1"
+            refresh = (
+                parse_qs(url.query).get("refresh", ["0"])[0] == "1"
+                and secrets.compare_digest(self.headers.get("X-Peanut-Queue-Token", ""), self.queue_token)
+            )
             return self._json(200, {"models": agent_settings.list_models(refresh=refresh)})
         if url.path == "/api/sessions":
             q = parse_qs(url.query)
@@ -609,7 +623,7 @@ class _Handler(BaseHTTPRequestHandler):
             if round_param:
                 selected = (
                     auto_rounds.round_range(session_dir, int(round_param))
-                    if round_param.isdigit() else None
+                    if round_param.isascii() and round_param.isdigit() else None
                 )
                 if selected is None:
                     return self._error(404, f"no committed round {round_param}")
@@ -1242,7 +1256,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(200, {"configs": configs})
 
     def _post_settings_agents(self, data: dict) -> None:
-        if not self._dashboard_action("Reload the settings page before saving"):
+        if not self._writer_action("Reload the settings page before saving"):
             return
         allowed = {str(p) for p in self._review_configs()}
         path = data.get("config")
@@ -1259,8 +1273,11 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(200, {"path": path, "agents": agents})
 
     def _post_session_agents(self, session_dir: Path, data: dict) -> None:
-        if not self._dashboard_action("Reload the session page before changing agents"):
+        if not self._writer_action("Reload the session page before changing agents"):
             return
+        loop = auto_rounds.loop_status(session_dir)
+        if loop and loop["running"]:
+            return self._error(409, "stop the automatic rounds before changing agents")
         try:
             agent_settings.update_session_agents(session_dir, data.get("agents", []))
         except agent_settings.SettingsError as exc:
@@ -1275,7 +1292,7 @@ class _Handler(BaseHTTPRequestHandler):
         return value
 
     def _post_local_start(self, data: dict) -> None:
-        if not self._dashboard_action("Reload the local reviews page before starting a review"):
+        if not self._writer_action("Reload the local reviews page before starting a review"):
             return
         from ..cli import _load_project_config
         allowed = {str(p) for p in self._review_configs()}
@@ -1290,6 +1307,12 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             rounds = self._rounds(data.get("rounds"))
             cfg, _path = _load_project_config(config)
+            review_root = Path(cfg["reviewRoot"]).resolve()
+            if not any(review_root == Path(root).resolve() for root in self.registry.roots):
+                raise ValueError(
+                    f"the config's reviewRoot {review_root} is not a session root of this "
+                    "dashboard; start the server with that root"
+                )
             agents = agent_settings.apply_updates(cfg["agents"], data.get("agents", []))
             session_dir = auto_rounds.create_local_session(cfg, workspace.strip(), base.strip(), agents)
         except (ValueError, RuntimeError, OSError) as exc:
@@ -1303,7 +1326,7 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(201, {"session_id": load_session(session_dir).id, "session_dir": str(session_dir)})
 
     def _post_loop_start(self, session_dir: Path, data: dict) -> None:
-        if not self._dashboard_action("Reload the session page before starting rounds"):
+        if not self._writer_action("Reload the session page before starting rounds"):
             return
         try:
             auto_rounds.spawn_driver(session_dir, self._rounds(data.get("rounds")))

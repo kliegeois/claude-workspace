@@ -21,6 +21,8 @@ Options:
   --prompt TEXT|FILE  Prompt text, or path to a prompt file (if a single word
                       matching an existing file)
   --prompt-file FILE  Read prompt from FILE
+  --allowlist-only    Run only allow-listed commands (omit cursor-agent --force,
+                      which otherwise runs everything not explicitly denied)
   -h, --help          Show this help
 
 The prompt can be provided as: --prompt, --prompt-file, or trailing positional
@@ -46,6 +48,7 @@ task_name=""
 timeout_secs=480
 opt_prompt=""
 opt_prompt_file=""
+force_flag="--force"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -56,6 +59,7 @@ while [[ $# -gt 0 ]]; do
         --timeout)     timeout_secs="$2"; shift 2 ;;
         --prompt)      opt_prompt="$2"; shift 2 ;;
         --prompt-file) opt_prompt_file="$2"; shift 2 ;;
+        --allowlist-only) force_flag=""; shift ;;
         -h|--help)     usage 0 ;;
         --)            shift; break ;;
         -*)            echo "Error: Unknown option: $1" >&2; usage 1 ;;
@@ -171,7 +175,7 @@ echo "" >&2
 
 exec cursor-agent --print \
     --model "$model" \
-    --force \
+    ${force_flag:+"$force_flag"} \
     --trust \
     --output-format text \
     --workspace "$workspace" \

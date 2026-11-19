@@ -19,6 +19,8 @@
       "Shell(which **)",
       "Shell(file **)",
       "Shell(realpath **)",
+      "Shell(rg **)",
+      "Shell(grep **)",
 
       "Shell(git diff **)",
       "Shell(git -C * diff **)",

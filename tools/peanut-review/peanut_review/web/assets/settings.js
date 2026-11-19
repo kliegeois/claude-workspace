@@ -16,7 +16,9 @@
 
   async function loadModels(refresh) {
     try {
-      const r = await fetch(`${BASE}/api/models${refresh ? "?refresh=1" : ""}`, { cache: "no-store" });
+      const r = await fetch(`${BASE}/api/models${refresh ? "?refresh=1" : ""}`, {
+        cache: "no-store", headers: { "X-Peanut-Queue-Token": window.PR_ACTION_TOKEN || "" },
+      });
       const data = await r.json();
       datalist.innerHTML = (data.models || [])
         .map((m) => `<option value="${attrEsc(m.id)}">${esc(m.label)}</option>`).join("");
@@ -29,7 +31,7 @@
         + `<p class="error">${esc(config.error)}</p></section>`;
     }
     const rows = config.agents.map((a) => `<tr>`
-      + `<td><input type="checkbox" data-enabled="${attrEsc(a.name)}"${a.enabled ? " checked" : ""} aria-label="Enable ${attrEsc(a.name)}"></td>`
+      + `<td><input type="checkbox" data-enabled="${attrEsc(a.name)}"${a.enabled ? " checked" : ""}${a.role === "curator" ? " disabled title=\"The curator is required\"" : ""} aria-label="Enable ${attrEsc(a.name)}"></td>`
       + `<td class="agent-name">${esc(a.name)}</td>`
       + `<td>${esc(a.role)}</td>`
       + `<td class="mono">${esc(a.persona || "—")}</td>`

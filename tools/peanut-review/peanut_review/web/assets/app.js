@@ -1742,9 +1742,13 @@
   async function openAgentConfig() {
     if (!agentConfigDialog) return;
     agentConfigError.hidden = true;
-    const agents = lastAgents.length ? lastAgents : [];
+    try {
+      const r = await fetch(`${sessionUrl}/api/session`, { cache: "no-store" });
+      if (r.ok) lastAgents = (await r.json()).agents || lastAgents;
+    } catch { /* fall back to the last poll */ }
+    const agents = lastAgents;
     agentConfigBody.innerHTML = agents.map((a) => `<label class="local-agent">`
-      + `<input type="checkbox" data-agent="${attrEsc(a.name)}"${a.enabled === false ? "" : " checked"}> `
+      + `<input type="checkbox" data-agent="${attrEsc(a.name)}"${a.enabled === false ? "" : " checked"}${a.role === "curator" ? " disabled title=\"The curator is required\"" : ""}> `
       + `<span class="agent-name">${esc(a.name)}</span> <span class="sub">${esc(a.role || "reviewer")}${a.persona ? " · " + esc(a.persona) : ""}</span> `
       + `<input class="mono local-agent-model" list="agent-model-options" data-model="${attrEsc(a.name)}" value="${attrEsc(a.model || "")}" aria-label="${attrEsc(a.name)} model">`
       + `</label>`).join("") || "<p>(no agents)</p>";

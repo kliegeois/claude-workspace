@@ -128,8 +128,24 @@ def test_editor_runs_in_a_sparse_copy_of_a_sparse_checkout(session_dir: Path, re
     monkeypatch.setattr(auto_rounds, "_wait", lambda *a, **k: [])
     state = auto_rounds.run(session_dir, 1)
     assert "docs" not in seen["files"] and "src" in seen["files"]
-    assert state["status"] == "converged" and state["rounds"][0]["status"] == "no-changes"
+    assert state["status"] == "blocked" and state["rounds"][0]["status"] == "no-changes"
+    assert "1 finding(s) open for you" in state["reason"]
     assert _git(repo, "sparse-checkout", "list") == "src"
+
+
+def test_non_cone_sparse_patterns_are_copied(session_dir: Path, repo: Path):
+    _git(repo, "sparse-checkout", "init", "--no-cone")
+    info = Path(_git(repo, "rev-parse", "--path-format=absolute", "--git-path", "info/sparse-checkout"))
+    info.write_text("/src/\n")
+    _git(repo, "sparse-checkout", "reapply")
+    worktree = auto_rounds._prepare_editor_worktree(session_dir, str(repo), _git(repo, "rev-parse", "HEAD"))
+    try:
+        assert sorted(p.name for p in worktree.iterdir() if p.name != ".git") == [".cursor", "src"]
+        cone = subprocess.run(["git", "-C", str(worktree), "config", "--bool", "core.sparseCheckoutCone"],
+                              capture_output=True, text=True).stdout.strip()
+        assert cone != "true"
+    finally:
+        auto_rounds._remove_editor_worktree(session_dir, str(repo))
 
 
 def test_dirty_developer_checkout_blocks_the_fast_forward(session_dir: Path, repo: Path, fake: FakeAgents,
@@ -149,6 +165,10 @@ def test_dirty_developer_checkout_blocks_the_fast_forward(session_dir: Path, rep
     assert state["rounds"][0]["status"] == "not-applied"
     assert _git(repo, "rev-parse", "HEAD") == head0
     assert (repo / "src" / "a.py").read_text() == "x = 99\n"
+    kept = state["rounds"][0]["head_after"]
+    assert f"git merge --ff-only {kept}" in state["reason"]
+    refs = _git(repo, "for-each-ref", "--format=%(objectname)", "refs/peanut-review/")
+    assert kept in refs.split()
 
 
 def test_editor_failure_keeps_its_checkout(session_dir: Path, fake: FakeAgents, monkeypatch):
@@ -325,3 +345,50 @@ def test_editor_launch_uses_its_checkout_and_prompt(session_dir: Path, repo: Pat
         assert "Shell(git push **)" in deny and "Shell(git commit **)" in deny
     finally:
         assert auto_rounds._remove_editor_worktree(session_dir, str(repo))
+
+
+def test_stop_signal_and_stop_during_startup_are_kept(session_dir: Path, fake: FakeAgents, monkeypatch):
+    handler = auto_rounds.stop_on_signal(session_dir)
+    handler(15, None)
+    assert (session_dir / auto_rounds.STOP_FILE).exists()
+
+    auto_rounds._write_loop(session_dir, {"status": "starting", "spawned_at": __import__("time").time(),
+                                          "token": "t1", "rounds": []})
+    assert auto_rounds.request_stop(session_dir) is True
+    monkeypatch.setenv(auto_rounds.DRIVER_TOKEN_ENV, "t1")
+    state = auto_rounds.run(session_dir, 2)
+    assert state["status"] == "stopped"
+    assert fake.calls == []
+
+
+def test_second_driver_is_refused_while_one_is_starting(session_dir: Path, fake: FakeAgents, monkeypatch):
+    auto_rounds._write_loop(session_dir, {"status": "starting", "spawned_at": __import__("time").time(),
+                                          "token": "t1", "rounds": []})
+    monkeypatch.delenv(auto_rounds.DRIVER_TOKEN_ENV, raising=False)
+    with pytest.raises(ValueError, match="already running"):
+        auto_rounds.run(session_dir, 1)
+    assert "token" not in auto_rounds.loop_status(session_dir)
+
+
+def test_editor_is_allowlist_only_and_cursor_only(session_dir: Path, repo: Path):
+    from peanut_review import launch, validation
+    worktree = auto_rounds._prepare_editor_worktree(session_dir, str(repo), _git(repo, "rev-parse", "HEAD"))
+    try:
+        [editor] = launch.launch_agents(session_dir, dry_run=True, agent_names=["Editor"],
+                                        workspace_override=str(worktree))
+        assert "--allowlist-only" in editor["cmd"]
+        (repo / ".cursor").mkdir(exist_ok=True)
+        (repo / ".cursor" / "cli.json").write_text(
+            (auto_rounds.TEMPLATES_DIR / "cli.sample.json").read_text())
+        [reviewer] = launch.launch_agents(session_dir, dry_run=True, agent_names=["Ada"])
+        assert "--allowlist-only" not in reviewer["cmd"]
+        allow = json.loads((worktree / ".cursor" / "cli.json").read_text())["permissions"]["allow"]
+        assert f"Shell({auto_rounds.PR_BIN} **)" in allow
+    finally:
+        auto_rounds._remove_editor_worktree(session_dir, str(repo))
+    errors: list[str] = []
+    validation._validate_agent_configs(
+        [{"name": "E", "model": "m", "role": "editor", "runner": "codex"}],
+        personas_dir=None, ssh_target_names=set(), errors=errors,
+    )
+    assert any("must be 'cursor' for editor" in e for e in errors)

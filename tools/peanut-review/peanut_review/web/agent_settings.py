@@ -27,6 +27,7 @@ MODELS_TTL_SECONDS = 600
 EDITOR_AGENT_NAME = "Editor"
 
 _models_lock = threading.Lock()
+_config_lock = threading.Lock()
 _models_cache: tuple[float, list[dict]] | None = None
 
 
@@ -137,6 +138,8 @@ def _apply(agents: list[dict], updates: dict[str, dict]) -> list[dict]:
                          and a.get("enabled", True) is not False]
     if not enabled_reviewers:
         raise SettingsError("at least one reviewer must stay enabled")
+    if any(_role(a) == AgentRole.CURATOR.value and a.get("enabled", True) is False for a in result):
+        raise SettingsError("the curator cannot be disabled; PR sessions and automatic rounds need it")
     return result
 
 
@@ -173,14 +176,21 @@ def read_config(path: Path) -> dict:
 
 def update_config_agents(path: Path, updates, *, add_editor: bool = False) -> list[dict]:
     """Apply enable/model changes to the project config; other keys are kept as written."""
+    with _config_lock:
+        return _update_config_agents(path, updates, add_editor=add_editor)
+
+
+def _update_config_agents(path: Path, updates, *, add_editor: bool) -> list[dict]:
     data = read_config(path)
     agents = data["agents"]
     if add_editor and not any(_role(a) == AgentRole.EDITOR.value for a in agents):
-        template = next((a for a in agents if _role(a) == AgentRole.CURATOR.value), None) or agents[0]
+        cursor_agents = [a for a in agents if a.get("runner", "cursor") == "cursor"]
+        template = next((a for a in cursor_agents if _role(a) == AgentRole.CURATOR.value), None) or (
+            cursor_agents[0] if cursor_agents else {"model": "auto"})
         agents = [*agents, {
             "name": EDITOR_AGENT_NAME,
-            "model": template.get("model", ""),
-            "runner": template.get("runner", "cursor"),
+            "model": template.get("model") or "auto",
+            "runner": "cursor",
             "role": AgentRole.EDITOR.value,
         }]
     data["agents"] = _apply(agents, _validate_updates(updates))

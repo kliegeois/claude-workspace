@@ -126,6 +126,12 @@ def _validate_agent_configs(
             elif runner != "codex":
                 errors.append(f"{label}.fastMode is only supported with runner 'codex'")
 
+        if role == AgentRole.EDITOR.value and runner != "cursor":
+            errors.append(
+                f"{label}.runner must be 'cursor' for editor agents; other runners "
+                "do not enforce the Editor's command allow list"
+            )
+
         ssh_target = agent.get("sshTarget", agent.get("ssh_target"))
         if ssh_target is not None:
             if not isinstance(ssh_target, str) or not ssh_target.strip():

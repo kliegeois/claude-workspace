@@ -112,6 +112,7 @@ def test_update_config_can_add_an_editor_from_the_curator(config: Path):
     ([{"name": "Ada", "enabled": "no"}], "true or false"),
     ([{"name": "Ada", "model": "bad model; rm -rf"}], "invalid model"),
     ({"name": "Ada"}, "must be a list"),
+    ([{"name": "Curator", "enabled": False}], "curator cannot be disabled"),
 ])
 def test_update_config_rejects_bad_updates_without_writing(config: Path, updates, message):
     before = config.read_text()
@@ -195,5 +196,26 @@ def test_settings_endpoints_require_the_page_token(session_dir: Path, config: Pa
 
         with urllib.request.urlopen(f"{base}/settings") as resp:
             assert b"settings.js" in resp.read()
+    finally:
+        srv.shutdown()
+
+
+def test_writer_actions_are_localhost_only(session_dir: Path, config: Path):
+    registry = web_app.SessionRegistry([session_dir.parent])
+    srv = web_app.make_server("127.0.0.1", 0, registry, review_config=str(config))
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    token = srv.RequestHandlerClass.queue_token
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/settings/agents",
+            data=json.dumps({"config": str(config.resolve()), "agents": []}).encode(),
+            headers={"Content-Type": "application/json", "X-Peanut-Queue-Token": token,
+                     "Host": "rebound.example:80"}, method="POST")
+        with pytest.raises(urllib.error.HTTPError) as err:
+            urllib.request.urlopen(req)
+        assert err.value.code == 403
+        code, _ = _post(f"http://127.0.0.1:{port}/api/settings/agents", ["not", "an", "object"], token)
+        assert code == 400
     finally:
         srv.shutdown()

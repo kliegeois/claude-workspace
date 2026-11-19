@@ -41,6 +41,11 @@ commit for this round, and moves the developer's branch to it. Therefore:
 - Do not create files outside the repository other than under `${SCRATCH_DIR}`.
 - Do not edit `.cursor/`.
 
+Only allow-listed shell commands run: the peanut-review CLI, read-only git
+(`diff`, `status`, `log`, `show`, `blame`, `rev-parse`), file inspection
+(`cat`, `ls`, `rg`, ...), and `pytest` / `py_compile`. Anything else is
+rejected; do not try to work around a rejection.
+
 The change under review:
 ```
 ${GIT_DIFF_COMMANDS}

@@ -1443,7 +1443,7 @@ def cmd_auto_rounds(args: argparse.Namespace) -> int:
     if args.rounds is None:
         print("Error: --rounds is required", file=sys.stderr)
         return 1
-    signal.signal(signal.SIGTERM, auto_rounds.raise_stopped)
+    signal.signal(signal.SIGTERM, auto_rounds.stop_on_signal(session_dir))
     try:
         state = auto_rounds.run(session_dir, args.rounds)
     except (ValueError, RuntimeError, TimeoutError, OSError, subprocess.SubprocessError) as e:
