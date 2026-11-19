@@ -54,6 +54,17 @@ def render_queue(base_url: str, token: str, enabled: bool) -> str:
 <tbody id="queue-rows"></tbody></table></div>
 <div id="queue-empty" class="empty">{"Loading your review queue…" if enabled else "Queue is not configured."}</div>
 </main>
+<dialog id="queue-agents-dialog" aria-labelledby="queue-agents-title">
+<h2 id="queue-agents-title">Agents for this review</h2>
+<p class="sub">Turn each persona on or off and choose its model. Copying puts that lineup in this task only. Settings stay unchanged.</p>
+<div id="queue-agents-body"></div>
+<p id="queue-agents-status" class="settings-status" role="status"></p>
+<div class="delete-actions">
+<button id="queue-agents-cancel" type="button">Cancel</button>
+<button id="queue-agents-copy" type="button">Copy review task</button>
+</div>
+<datalist id="queue-model-options"></datalist>
+</dialog>
 <dialog id="queue-task-dialog" aria-labelledby="queue-task-title">
 <h2 id="queue-task-title">Copy task to your driver</h2>
 <p>Automatic copying is unavailable. Copy the selected text and paste it into your driver conversation.</p>

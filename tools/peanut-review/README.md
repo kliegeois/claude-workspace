@@ -956,8 +956,13 @@ After each poll, the account card shows the GitHub API calls used this hour,
 the limit, and when it resets (it turns red above 80%); hover it for the
 per-minute search budget. Checking the budget does not count against it.
 
-**Copy review task** and **Copy re-review task** copy a task for your driver
-conversation. It includes the PR URL, selected GitHub account, review config,
+**Choose agents** opens the personas for that pull request. Turn each one on or
+off and edit or pick its model, then copy. The copied task carries that lineup
+and tells the driver to use it for this review only. It does not change
+Settings or an existing session until the driver applies it. The curator stays
+on, and at least one reviewer must stay on. **Copy review task** and **Copy
+re-review task** copy a task that uses the saved lineup instead. Either task
+includes the PR URL, selected GitHub account, review config,
 session root, existing session/workspace, configured checkout paths, and observed
 revision. If clipboard access is unavailable, a dialog provides selectable text.
 The driver uses the peanut-review skill and CLI to fetch the latest revision,

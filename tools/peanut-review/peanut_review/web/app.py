@@ -1381,6 +1381,14 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(202, {"refreshing": True})
         if path == "/api/queue/start":
             return self._error(410, "Queue execution has moved to the driver. Reload the queue and copy a review task.")
+        if path == "/api/queue/task":
+            try:
+                task = self.queue.task_with_agents(data.get("key"), data.get("agents", []))
+            except KeyError:
+                return self._error(404, "unknown queue item")
+            except (agent_settings.SettingsError, ValueError, OSError) as exc:
+                return self._error(400, str(exc))
+            return self._json(200, {"task": task})
         return self._error(404, "unknown queue action")
 
     def _post_agents_kill(self, session_dir: Path, data: dict) -> None:
